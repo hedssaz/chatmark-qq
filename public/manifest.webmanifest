@@ -1,0 +1,17 @@
+{
+  "name": "QQ 聊天标注工具",
+  "short_name": "聊天标注",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f7f0e5",
+  "theme_color": "#f7f0e5",
+  "description": "用于查看 QQ Chat Exporter JSON 并进行对话标注的本地工具。",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
