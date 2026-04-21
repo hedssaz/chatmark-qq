@@ -1,75 +1,98 @@
 # chatmark-qq
 
-A local-first annotation tool for QQ chat exports, designed for conversation review and LLM fine-tuning dataset creation.
+一个本地优先的 QQ 聊天标注工具，适合浏览 `qq-chat-exporter` 导出的聊天 JSON，并整理成适用于 LLM 微调的数据集。  
+A local-first annotation tool for QQ chat exports, designed for reviewing conversations and building datasets for LLM fine-tuning.
 
-## Features
+## 项目简介 | Overview
 
-- Loads JSON files exported by [`shuakami/qq-chat-exporter`](https://github.com/shuakami/qq-chat-exporter)
-- QQ-style chat UI for browsing long conversations
-- Virtualized message list for fast loading on large histories
-- Message selection, review, reordering, editing, and per-item submission
-- Annotation manager for revisiting, editing, locating, and deleting saved annotations
-- Per-message annotation counts with progressive highlighting
-- Jump back to the farthest annotated position
-- Saves annotation data next to the selected chat file
+`chatmark-qq` 读取 QQ 聊天导出 JSON，保留原始消息顺序和发送者信息，并提供接近聊天软件的界面来进行消息选择、人工核对、标注管理和训练样本导出。  
+`chatmark-qq` reads QQ chat export JSON files, preserves original message order and sender metadata, and provides a chat-like UI for message selection, review, annotation management, and dataset export.
 
-## How It Works
+## 功能特性 | Features
 
-`chatmark-qq` reads a QQ chat export JSON, normalizes sender metadata, and lets you build supervised fine-tuning samples from selected message spans.
+- 加载 [`shuakami/qq-chat-exporter`](https://github.com/shuakami/qq-chat-exporter) 导出的 JSON 文件  
+  Load JSON files exported by [`shuakami/qq-chat-exporter`](https://github.com/shuakami/qq-chat-exporter)
+- QQ 风格聊天界面，适合长对话浏览  
+  QQ-style chat interface for browsing long conversations
+- 虚拟列表渲染，大聊天记录也能快速加载  
+  Virtualized message list for fast loading on large histories
+- 支持多条消息选择、核对、改顺序、改内容后再提交  
+  Select, review, reorder, and edit message spans before saving
+- 标注管理界面，可再次定位、编辑或删除历史标注  
+  Annotation manager for locating, editing, and deleting saved annotations
+- 每条消息显示被标注次数，并按次数逐步加深高亮  
+  Per-message annotation counts with progressive highlighting
+- 一键回到最远已标注位置  
+  Jump back to the farthest annotated position
+- 标注结果与进度文件保存在原聊天文件同目录  
+  Saves annotation output and progress files next to the original chat file
 
-Each saved annotation stores:
+## 工作流程 | Workflow
 
-- The selected raw messages
-- A reviewed JSON preview
-- Annotation metadata and update timestamps
-- Per-message progress data for revisit workflows
+1. 选择一份 QQ 聊天导出 JSON  
+   Pick a QQ chat export JSON file
+2. 在聊天界面中选择你想标注的消息片段  
+   Select the message span you want to annotate
+3. 在提交前核对弹窗中调整顺序和内容  
+   Review and adjust order/content in the submission dialog
+4. 保存后生成结构化标注和进度信息  
+   Save the annotation and generate structured output plus progress data
 
-## Run Locally
+## 本地运行 | Run Locally
 
-Requirements:
+### 运行要求 | Requirements
 
-- Windows with Node.js installed
+- Windows
+- Node.js
 
-Start with:
+### 启动方式 | Start
+
+使用批处理：  
+Using batch:
 
 ```bat
 start.bat
 ```
 
-Or in PowerShell:
+或使用 PowerShell：  
+Or with PowerShell:
 
 ```powershell
 .\start.ps1
 ```
 
+然后打开：  
 Then open:
 
 ```text
 http://127.0.0.1:41739
 ```
 
-## Data Output
+## 输出文件 | Output Files
 
-For a selected chat file like:
+假设你选择的聊天文件是：  
+If your selected chat file is:
 
 ```text
 your-chat.json
 ```
 
-the tool writes:
+工具会在同目录生成：  
+The tool will create the following files in the same folder:
 
 ```text
 your-chat.annotations.json
 your-chat.annotation-progress.json
 ```
 
-in the same folder as the original chat export.
+## 当前状态 | Current Status
 
-## Notes
-
-- This project is currently optimized for local Windows use.
-- The file picker uses the native Windows dialog.
-- The UI is responsive across desktop, tablet, and phone-sized screens.
+- 当前版本优先针对本地 Windows 使用场景优化  
+  The current version is primarily optimized for local Windows usage
+- 文件选择使用 Windows 原生文件选择框  
+  The file picker currently uses the native Windows file dialog
+- 前端界面已适配桌面、平板和手机尺寸  
+  The frontend is responsive across desktop, tablet, and phone-sized screens
 
 ## License
 
