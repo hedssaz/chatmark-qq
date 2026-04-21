@@ -1,5 +1,9 @@
 data/
 *.annotations.json
 *.annotation-progress.json
+node_modules/
+dist/
+server.out
+server.err
 Thumbs.db
 .DS_Store

@@ -197,6 +197,50 @@ textarea {
   flex: 1;
 }
 
+.swap-grid {
+  margin-top: 12px;
+  display: grid;
+  gap: 12px;
+}
+
+.swap-card {
+  padding: 14px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--line);
+}
+
+.swap-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.swap-description {
+  margin: 10px 0 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.apply-mapping-btn {
+  margin-top: 10px;
+  width: 100%;
+}
+
+.state-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(201, 125, 50, 0.14);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .meta-stack {
   display: flex;
   flex-wrap: wrap;
@@ -250,6 +294,10 @@ textarea {
 
 .review-badge.user {
   background: rgba(255, 255, 255, 0.92);
+}
+
+.review-badge.other {
+  background: rgba(201, 125, 50, 0.14);
 }
 
 .placeholder-card {

@@ -14,6 +14,8 @@ const state = {
   messageCountChipRefs: new Map(),
   activeLoadToken: null,
   sidebarOpen: false,
+  roleSwap: false,
+  chatSwap: false,
   virtual: {
     heights: [],
     offsets: [0],
@@ -35,6 +37,11 @@ const els = {
   pickFile: document.querySelector('#pick-file'),
   selectedFileCard: document.querySelector('#selected-file-card'),
   chatMeta: document.querySelector('#chat-meta'),
+  toggleRoleSwap: document.querySelector('#toggle-role-swap'),
+  applyRoleMapping: document.querySelector('#apply-role-mapping'),
+  roleSwapState: document.querySelector('#role-swap-state'),
+  toggleChatSwap: document.querySelector('#toggle-chat-swap'),
+  chatSwapState: document.querySelector('#chat-swap-state'),
   clearSelection: document.querySelector('#clear-selection'),
   reviewSelection: document.querySelector('#review-selection'),
   jumpEarliest: document.querySelector('#jump-earliest'),
@@ -78,19 +85,8 @@ function nl2br(value) {
   return escapeHtml(value).replaceAll('\n', '<br>');
 }
 
-function selectionOrderMap() {
-  return new Map(state.selectedMessageIndices.map((messageIndex, index) => [messageIndex, index + 1]));
-}
-
-function annotationCountMap() {
-  const counts = new Map();
-  for (const annotation of state.annotations) {
-    const seen = new Set(annotation.selectedMessages.map((item) => item.messageIndex));
-    for (const messageIndex of seen) {
-      counts.set(messageIndex, (counts.get(messageIndex) || 0) + 1);
-    }
-  }
-  return counts;
+function normalizeText(value) {
+  return `${value ?? ''}`.trim();
 }
 
 function pauseForFrame() {
@@ -130,8 +126,6 @@ function syncResponsiveLayout() {
 }
 
 function setLoadingState({ visible, percent = 0, title = '正在加载聊天记录', text = '正在准备数据...' }) {
-  if (!els.loadingOverlay) return;
-
   els.loadingOverlay.hidden = !visible;
   els.loadingTitle.textContent = title;
   els.loadingPercent.textContent = `${Math.max(0, Math.min(100, Math.round(percent)))}%`;
@@ -155,23 +149,67 @@ async function fetchJson(url, options = {}) {
   return data;
 }
 
-function inferRole(message) {
-  return message.isSelf ? 'assistant' : 'user';
+function selectionOrderMap() {
+  return new Map(state.selectedMessageIndices.map((messageIndex, index) => [messageIndex, index + 1]));
+}
+
+function annotationCountMap() {
+  const counts = new Map();
+  for (const annotation of state.annotations) {
+    const seen = new Set(annotation.selectedMessages.map((item) => item.messageIndex));
+    for (const messageIndex of seen) {
+      counts.set(messageIndex, (counts.get(messageIndex) || 0) + 1);
+    }
+  }
+  return counts;
+}
+
+function chatIdentity() {
+  return state.chat?.identity || {
+    self: { uid: '', uin: '', name: '', displayName: '我' },
+    peer: { uid: '', uin: '', nickname: '', remark: '', displayName: '对方' },
+  };
+}
+
+function roleForSpeakerKey(speakerKey) {
+  if (speakerKey === 'self') {
+    return state.roleSwap ? 'assistant' : 'user';
+  }
+  if (speakerKey === 'peer') {
+    return state.roleSwap ? 'user' : 'assistant';
+  }
+  return null;
+}
+
+function roleBadgeText(speakerKey) {
+  const role = roleForSpeakerKey(speakerKey);
+  if (role === 'user') return 'user';
+  if (role === 'assistant') return 'assistant';
+  return 'other';
 }
 
 function inferSpeakerName(message) {
-  if (message.senderName) return message.senderName;
-  if (message.isSelf) {
-    return state.chat?.chatInfo?.selfName || state.chat?.chatInfo?.selfUid || '我';
+  if (!state.chat) return normalizeText(message?.senderName) || '未知';
+  if (message?.senderKey === 'self') return chatIdentity().self.displayName;
+  if (message?.senderKey === 'peer') return chatIdentity().peer.displayName;
+  return normalizeText(message?.senderName) || normalizeText(message?.rawSenderName) || 'system';
+}
+
+function bubbleClassForMessage(message) {
+  if (message?.senderKey === 'self') {
+    return state.chatSwap ? 'incoming' : 'outgoing';
   }
-  return state.chat?.chatInfo?.name || '对方';
+  if (message?.senderKey === 'peer') {
+    return state.chatSwap ? 'outgoing' : 'incoming';
+  }
+  return 'system';
 }
 
 function estimateMessageHeight(message) {
   const text = `${message.text || ''}`;
   const explicitLines = Math.max(1, text.split('\n').length);
   const wrappedLines = Math.max(explicitLines, Math.ceil(text.length / 26) || 1);
-  const base = message.system ? 82 : 106;
+  const base = message.senderKey === 'other' || message.senderKey === 'system' ? 82 : 106;
   const extra = Math.min(320, Math.max(0, wrappedLines - 1) * 20);
   return base + extra + ITEM_GAP;
 }
@@ -194,7 +232,7 @@ function initializeVirtualState() {
 
 function recomputeOffsetsFrom(startIndex = 0) {
   const { heights, offsets } = state.virtual;
-  if (heights.length === 0) {
+  if (!heights.length) {
     state.virtual.offsets = [0];
     state.virtual.totalHeight = 0;
     return;
@@ -212,7 +250,7 @@ function recomputeOffsetsFrom(startIndex = 0) {
 
 function findIndexForOffset(offset) {
   const { offsets, heights } = state.virtual;
-  if (heights.length === 0) return 0;
+  if (!heights.length) return 0;
 
   const boundedOffset = Math.max(0, Math.min(offset, state.virtual.totalHeight));
   let low = 0;
@@ -239,7 +277,7 @@ function createSpacer(height) {
 
 function createMessageRow(message, count = 0, order = 0) {
   const row = document.createElement('li');
-  row.className = `msg-row ${message.isSelf ? 'outgoing' : 'incoming'} ${message.system ? 'system' : ''}`;
+  row.className = `msg-row ${bubbleClassForMessage(message)}`;
   row.dataset.index = `${message.index}`;
 
   for (let level = 1; level <= 4; level += 1) {
@@ -307,7 +345,7 @@ function scheduleMeasureRenderedRows() {
 
 function renderVirtualWindow(force = false) {
   const messages = state.chat?.messages || [];
-  if (messages.length === 0) {
+  if (!messages.length) {
     els.chatList.innerHTML = '<li class="placeholder-card">没有可显示的聊天记录。</li>';
     state.messageRowRefs = new Map();
     state.messageOrderChipRefs = new Map();
@@ -332,17 +370,16 @@ function renderVirtualWindow(force = false) {
 
   const counts = annotationCountMap();
   const orders = selectionOrderMap();
-  const fragment = document.createDocumentFragment();
   const topHeight = state.virtual.offsets[start] || 0;
   const bottomHeight = state.virtual.totalHeight - (state.virtual.offsets[end + 1] || 0);
+  const fragment = document.createDocumentFragment();
 
   if (topHeight > 0) {
     fragment.appendChild(createSpacer(topHeight));
   }
 
   for (let index = start; index <= end; index += 1) {
-    const message = messages[index];
-    fragment.appendChild(createMessageRow(message, counts.get(index) || 0, orders.get(index) || 0));
+    fragment.appendChild(createMessageRow(messages[index], counts.get(index) || 0, orders.get(index) || 0));
   }
 
   if (bottomHeight > 0) {
@@ -380,6 +417,44 @@ function renderSelectedFileCard() {
   `;
 }
 
+function renderSwapStates() {
+  els.roleSwapState.textContent = state.roleSwap ? '反向' : '正向';
+  els.chatSwapState.textContent = state.chatSwap ? '反向' : '正向';
+}
+
+function inferStoredSpeakerKey(message) {
+  if (['self', 'peer', 'system', 'other'].includes(message?.speakerKey)) {
+    return message.speakerKey;
+  }
+
+  const identity = chatIdentity();
+  const senderUid = normalizeText(message?.senderUid);
+  const senderName = normalizeText(message?.senderName);
+
+  if (senderUid && senderUid === identity.self.uid) return 'self';
+  if (senderUid && senderUid === identity.peer.uid) return 'peer';
+  if (message?.isSelf) return 'self';
+
+  const peerTokens = new Set([
+    normalizeText(identity.peer.uid),
+    normalizeText(identity.peer.uin),
+    normalizeText(identity.peer.nickname),
+    normalizeText(identity.peer.remark),
+    normalizeText(identity.peer.displayName),
+  ]);
+  if (senderName && peerTokens.has(senderName)) return 'peer';
+
+  const selfTokens = new Set([
+    normalizeText(identity.self.uid),
+    normalizeText(identity.self.uin),
+    normalizeText(identity.self.name),
+    normalizeText(identity.self.displayName),
+  ]);
+  if (senderName && selfTokens.has(senderName)) return 'self';
+
+  return 'other';
+}
+
 function buildReviewRowsFromSelection() {
   const chatMessages = state.chat?.messages || [];
   return state.selectedMessageIndices
@@ -389,37 +464,79 @@ function buildReviewRowsFromSelection() {
       messageIndex: message.index,
       messageId: message.id,
       senderName: inferSpeakerName(message),
-      role: inferRole(message),
+      senderUid: message.senderUid,
+      senderUin: message.senderUin,
+      speakerKey: message.senderKey,
+      role: roleForSpeakerKey(message.senderKey) || 'other',
       text: message.text,
       time: message.time,
-      isSelf: message.isSelf,
+      isSelf: message.senderKey === 'self',
     }));
+}
+
+function roleTokenForReference(token) {
+  const identity = chatIdentity();
+  const normalized = normalizeText(token);
+  if (!normalized) return token;
+
+  const selfTokens = new Set([
+    normalizeText(identity.self.uid),
+    normalizeText(identity.self.uin),
+    normalizeText(identity.self.name),
+    normalizeText(identity.self.displayName),
+  ]);
+
+  const peerTokens = new Set([
+    normalizeText(identity.peer.uid),
+    normalizeText(identity.peer.uin),
+    normalizeText(identity.peer.nickname),
+    normalizeText(identity.peer.remark),
+    normalizeText(identity.peer.displayName),
+  ]);
+
+  if (selfTokens.has(normalized)) {
+    return roleForSpeakerKey('self') || normalized;
+  }
+  if (peerTokens.has(normalized)) {
+    return roleForSpeakerKey('peer') || normalized;
+  }
+  return normalized;
+}
+
+function transformTextForDataset(text) {
+  return `${text ?? ''}`.replace(/\[回复\s+([^:\]：]+)\s*([:：])/g, (_match, target, punctuation) => {
+    return `[回复 ${roleTokenForReference(target)}${punctuation}`;
+  });
 }
 
 function buildDatasetMessages(rows) {
   const groups = [];
 
   for (const row of rows) {
-    const text = `${row.text ?? ''}`.trim();
-    if (!text) continue;
+    const role = roleForSpeakerKey(row.speakerKey);
+    const text = transformTextForDataset(`${row.text ?? ''}`.trim());
+    if (!role || !text) continue;
 
     const previous = groups.at(-1);
-    if (previous && previous.role === row.role && previous.speakerName === row.senderName) {
+    if (previous && previous.role === role) {
       previous.lines.push(text);
       continue;
     }
 
-    groups.push({
-      role: row.role,
-      speakerName: row.senderName,
-      lines: [text],
-    });
+    groups.push({ role, lines: [text] });
   }
 
   return groups.map((group) => ({
     role: group.role,
-    content: `${group.speakerName}：${group.lines.join(' <MSG_SEP> ')}`,
+    content: group.lines.join(' <MSG_SEP> '),
   }));
+}
+
+function datasetForAnnotation(annotation) {
+  if (Array.isArray(annotation?.selectedMessages) && annotation.selectedMessages.length > 0) {
+    return { messages: buildDatasetMessages(annotation.selectedMessages) };
+  }
+  return annotation?.dataset || { messages: [] };
 }
 
 function refreshJsonPreview() {
@@ -428,18 +545,19 @@ function refreshJsonPreview() {
 }
 
 function renderReviewRows() {
-  if (state.reviewRows.length === 0) {
+  if (!state.reviewRows.length) {
     els.reviewRows.innerHTML = '<div class="placeholder-card">没有可提交的消息。</div>';
     refreshJsonPreview();
     return;
   }
 
   els.reviewRows.innerHTML = state.reviewRows
-    .map(
-      (row, index) => `
+    .map((row, index) => {
+      const role = roleBadgeText(row.speakerKey);
+      return `
         <article class="review-row" data-review-index="${index}">
           <div class="review-row-header">
-            <span class="review-badge ${row.role}">${row.role === 'assistant' ? '我方' : '对方'}</span>
+            <span class="review-badge ${role}">${role}</span>
             <span class="muted">${escapeHtml(row.senderName)} · ${escapeHtml(row.time || '')}</span>
           </div>
           <textarea class="review-textarea" data-action="edit-text" data-review-index="${index}">${escapeHtml(row.text)}</textarea>
@@ -449,8 +567,8 @@ function renderReviewRows() {
             <button type="button" class="ghost-btn danger" data-action="remove" data-review-index="${index}">移除</button>
           </div>
         </article>
-      `,
-    )
+      `;
+    })
     .join('');
 
   refreshJsonPreview();
@@ -459,7 +577,18 @@ function renderReviewRows() {
 function openReviewDialog({ editingAnnotation = null } = {}) {
   state.editingAnnotationId = editingAnnotation?.id || null;
   state.reviewRows = editingAnnotation
-    ? editingAnnotation.selectedMessages.map((message) => ({ ...message }))
+    ? editingAnnotation.selectedMessages.map((message) => ({
+        messageIndex: Number(message?.messageIndex ?? -1),
+        messageId: `${message?.messageId ?? ''}`,
+        senderName: `${message?.senderName ?? ''}` || inferSpeakerName(message),
+        senderUid: `${message?.senderUid ?? ''}`,
+        senderUin: `${message?.senderUin ?? ''}`,
+        speakerKey: inferStoredSpeakerKey(message),
+        role: roleForSpeakerKey(inferStoredSpeakerKey(message)) || 'other',
+        text: `${message?.text ?? ''}`,
+        time: `${message?.time ?? ''}`,
+        isSelf: Boolean(message?.isSelf),
+      }))
     : buildReviewRowsFromSelection();
 
   els.dialogTitle.textContent = state.editingAnnotationId ? '编辑标注' : '标注预览';
@@ -481,6 +610,7 @@ function renderChatMeta() {
     return;
   }
 
+  const identity = chatIdentity();
   const totalMessages = chat.statistics?.totalMessages ?? chat.messages.length;
   const pathBlock = `
     <details class="path-details">
@@ -494,10 +624,15 @@ function renderChatMeta() {
   `;
 
   els.chatMeta.innerHTML = `
-    <div class="meta-pill">聊天对象：${escapeHtml(chat.chatInfo?.name || '未命名')}</div>
+    <div class="meta-pill">聊天对象备注：${escapeHtml(identity.peer.remark || '未命名')}</div>
     <div class="meta-pill">聊天类型：${escapeHtml(chat.chatInfo?.type || 'unknown')}</div>
-    <div class="meta-pill">我的标识：${escapeHtml(chat.chatInfo?.selfName || chat.chatInfo?.selfUid || '未识别')}</div>
-    <div class="meta-pill">消息总数：${totalMessages}</div>
+    <div class="meta-pill">我：uid=${escapeHtml(identity.self.uid || '未识别')}</div>
+    <div class="meta-pill">我：qq=${escapeHtml(identity.self.uin || '未识别')}</div>
+    <div class="meta-pill">我：昵称=${escapeHtml(identity.self.name || '未识别')}</div>
+    <div class="meta-pill">对方：uid=${escapeHtml(identity.peer.uid || '未识别')}</div>
+    <div class="meta-pill">对方：qq=${escapeHtml(identity.peer.uin || '未识别')}</div>
+    <div class="meta-pill">对方：昵称=${escapeHtml(identity.peer.nickname || identity.peer.displayName || '未识别')}</div>
+    <div class="meta-pill">消息总数：${escapeHtml(totalMessages)}</div>
     ${pathBlock}
   `;
 }
@@ -511,7 +646,7 @@ function renderSchemaNote() {
   const fields = state.chat.schema.topLevelFields.join(' / ');
   els.schemaNote.innerHTML = `
     <span class="meta-pill">顶层字段：${escapeHtml(fields)}</span>
-    <span class="meta-pill">消息字段：sender / content / recalled / system</span>
+    <span class="meta-pill">默认角色：我=user，对方=assistant</span>
   `;
 }
 
@@ -521,27 +656,29 @@ function renderSelectionList() {
 
   els.selectionEmpty.hidden = selectedMessages.length > 0;
   els.selectionList.innerHTML = selectedMessages
-    .map(
-      (message, index) => `
+    .map((message, index) => {
+      const role = roleBadgeText(message.senderKey);
+      return `
         <li class="selection-item">
           <span class="selection-index">${index + 1}</span>
           <div>
             <strong>${escapeHtml(inferSpeakerName(message))}</strong>
             <p>${escapeHtml(message.text || '[空消息]')}</p>
+            <span class="muted">role=${escapeHtml(role)}</span>
           </div>
         </li>
-      `,
-    )
+      `;
+    })
     .join('');
 }
 
 function annotationSummary(annotation) {
-  const preview = annotation.dataset?.messages?.map((item) => item.content).join(' | ') || '';
+  const preview = datasetForAnnotation(annotation)?.messages?.map((item) => item.content).join(' | ') || '';
   return preview.length > 90 ? `${preview.slice(0, 90)}...` : preview;
 }
 
 function renderAnnotationSummary() {
-  if (state.annotations.length === 0) {
+  if (!state.annotations.length) {
     els.annotationSummary.innerHTML = '当前文件还没有任何标注。';
     return;
   }
@@ -556,8 +693,9 @@ function renderAnnotationSummary() {
 function renderAnnotationList() {
   els.annotationEmpty.hidden = state.annotations.length > 0;
   els.annotationList.innerHTML = state.annotations
-    .map(
-      (annotation) => `
+    .map((annotation) => {
+      const dataset = datasetForAnnotation(annotation);
+      return `
         <article class="annotation-card" data-annotation-id="${annotation.id}">
           <div class="annotation-card-header">
             <div>
@@ -567,15 +705,15 @@ function renderAnnotationList() {
             <div class="annotation-chip">${annotation.selectedMessages.length} 条原消息</div>
           </div>
           <p class="annotation-preview">${escapeHtml(annotationSummary(annotation))}</p>
-          <pre class="annotation-json">${escapeHtml(JSON.stringify(annotation.dataset, null, 2))}</pre>
+          <pre class="annotation-json">${escapeHtml(JSON.stringify(dataset, null, 2))}</pre>
           <div class="annotation-actions">
             <button type="button" class="ghost-btn" data-action="locate-annotation" data-annotation-id="${annotation.id}">定位</button>
             <button type="button" class="ghost-btn" data-action="edit-annotation" data-annotation-id="${annotation.id}">编辑</button>
             <button type="button" class="ghost-btn danger" data-action="delete-annotation" data-annotation-id="${annotation.id}">删除</button>
           </div>
         </article>
-      `,
-    )
+      `;
+    })
     .join('');
 }
 
@@ -634,7 +772,7 @@ async function renderChat(loadToken) {
   state.messageRowRefs = new Map();
   state.messageOrderChipRefs = new Map();
   state.messageCountChipRefs = new Map();
-  els.chatTitle.textContent = chat.chatInfo?.name || state.currentFileId || '未命名聊天';
+  els.chatTitle.textContent = chatIdentity().peer.displayName || state.currentFileId || '未命名聊天';
   els.chatScroll.scrollTop = 0;
 
   setLoadingState({
@@ -668,6 +806,9 @@ async function loadChat(fileId = '') {
 
   if (fileId) state.currentFileId = fileId;
   state.selectedMessageIndices = [];
+  state.roleSwap = false;
+  state.chatSwap = false;
+  renderSwapStates();
 
   setLoadingState({
     visible: true,
@@ -686,7 +827,7 @@ async function loadChat(fileId = '') {
     setLoadingState({
       visible: true,
       percent: 28,
-      text: '正在整理聊天元数据...',
+      text: '正在分析身份与元数据...',
     });
 
     state.chat = chat;
@@ -736,8 +877,8 @@ function toggleSelection(index) {
 
 async function saveCurrentReview() {
   const dataset = { messages: buildDatasetMessages(state.reviewRows) };
-  if (dataset.messages.length === 0) {
-    alert('当前标注没有有效内容，请至少保留一条非空消息。');
+  if (!dataset.messages.length) {
+    alert('当前标注没有有效内容，请至少保留一条属于我或对方的非空消息。');
     return;
   }
 
@@ -745,7 +886,10 @@ async function saveCurrentReview() {
     fileId: state.currentFileId,
     filePath: state.currentFilePath,
     label: els.annotationLabel.value.trim(),
-    selectedMessages: state.reviewRows,
+    selectedMessages: state.reviewRows.map((row) => ({
+      ...row,
+      role: roleForSpeakerKey(row.speakerKey) || 'other',
+    })),
     dataset,
   };
 
@@ -801,10 +945,10 @@ function scrollToMessage(index) {
   flashMessageRow(index);
 }
 
-function jumpToEarliestAnnotated() {
+function jumpToFarthestAnnotated() {
   const counts = annotationCountMap();
   const candidates = [...counts.keys()].sort((a, b) => b - a);
-  if (candidates.length === 0) {
+  if (!candidates.length) {
     alert('还没有已标注消息。');
     return;
   }
@@ -812,13 +956,61 @@ function jumpToEarliestAnnotated() {
 }
 
 function exportAnnotations() {
-  const blob = new Blob([JSON.stringify(state.annotations, null, 2)], { type: 'application/json' });
+  const exportPayload = state.annotations.map((annotation) => ({
+    ...annotation,
+    dataset: datasetForAnnotation(annotation),
+  }));
+  const blob = new Blob([JSON.stringify(exportPayload, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = url;
   anchor.download = `${(state.currentFileId || 'annotations').replace(/[\\/]/g, '_')}.annotations.export.json`;
   anchor.click();
   URL.revokeObjectURL(url);
+}
+
+async function applyRoleMappingToAllAnnotations() {
+  if (!state.currentFilePath || !state.annotations.length) {
+    alert('当前文件还没有可重算映射的标注。');
+    return;
+  }
+
+  const mappingLabel = state.roleSwap ? '我=assistant，对方=user' : '我=user，对方=assistant';
+  if (!confirm(`确定要将当前角色映射应用到当前文件的全部标注吗？\n\n当前映射：${mappingLabel}\n\n这会直接重写已保存标注里的 dataset 和 role。`)) {
+    return;
+  }
+
+  const result = await fetchJson('/api/annotations/remap', {
+    method: 'POST',
+    body: JSON.stringify({
+      fileId: state.currentFileId,
+      filePath: state.currentFilePath,
+      roleSwap: state.roleSwap,
+    }),
+  });
+
+  state.annotations = result.annotations || [];
+  renderSelectionList();
+  renderAnnotationSummary();
+  renderAnnotationList();
+  refreshMessageDecorations();
+}
+
+function handleRoleSwapToggle() {
+  state.roleSwap = !state.roleSwap;
+  renderSwapStates();
+  if (els.reviewDialog.open) {
+    renderReviewRows();
+  }
+  renderSelectionList();
+  renderAnnotationSummary();
+  renderAnnotationList();
+}
+
+function handleChatSwapToggle() {
+  state.chatSwap = !state.chatSwap;
+  renderSwapStates();
+  scheduleVirtualRender(true);
 }
 
 function bindEvents() {
@@ -832,6 +1024,9 @@ function bindEvents() {
 
   els.sidebarClose.addEventListener('click', closeSidebar);
   els.sidebarBackdrop.addEventListener('click', closeSidebar);
+  els.toggleRoleSwap.addEventListener('click', handleRoleSwapToggle);
+  els.applyRoleMapping.addEventListener('click', applyRoleMappingToAllAnnotations);
+  els.toggleChatSwap.addEventListener('click', handleChatSwapToggle);
 
   els.pickFile.addEventListener('click', async () => {
     const result = await fetchJson('/api/select-file', { method: 'POST' });
@@ -851,14 +1046,14 @@ function bindEvents() {
   });
 
   els.reviewSelection.addEventListener('click', () => {
-    if (!state.chat || state.selectedMessageIndices.length === 0) {
+    if (!state.chat || !state.selectedMessageIndices.length) {
       alert('请先选中要提交的聊天记录。');
       return;
     }
     openReviewDialog();
   });
 
-  els.jumpEarliest.addEventListener('click', jumpToEarliestAnnotated);
+  els.jumpEarliest.addEventListener('click', jumpToFarthestAnnotated);
   els.exportAnnotations.addEventListener('click', exportAnnotations);
   els.openAnnotations.addEventListener('click', () => {
     els.annotationsDialog.showModal();
@@ -870,6 +1065,7 @@ function bindEvents() {
   els.chatScroll.addEventListener('scroll', () => {
     scheduleVirtualRender();
   });
+
   window.addEventListener('resize', () => {
     syncResponsiveLayout();
   });
@@ -951,6 +1147,7 @@ function bindEvents() {
 async function init() {
   bindEvents();
   syncResponsiveLayout();
+  renderSwapStates();
   state.currentFilePath = localStorage.getItem('qq-annotator:last-file-path') || '';
   renderSelectedFileCard();
 

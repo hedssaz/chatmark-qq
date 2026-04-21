@@ -32,6 +32,32 @@
 
         <section class="panel">
           <div class="panel-header">
+            <h2>映射控制</h2>
+          </div>
+          <div class="swap-grid">
+            <div class="swap-card">
+              <div class="swap-topline">
+                <strong>User / Assistant</strong>
+                <span id="role-swap-state" class="state-pill">正向</span>
+              </div>
+              <p class="swap-description">控制导出的 `dataset.messages[].role`，默认是我=`user`，对方=`assistant`。</p>
+              <button id="toggle-role-swap" class="secondary-btn" type="button">互换 User / Assistant</button>
+              <button id="apply-role-mapping" class="ghost-btn apply-mapping-btn" type="button">将当前角色映射应用到全部标注</button>
+            </div>
+
+            <div class="swap-card">
+              <div class="swap-topline">
+                <strong>聊天框位置</strong>
+                <span id="chat-swap-state" class="state-pill">正向</span>
+              </div>
+              <p class="swap-description">只互换聊天界面里两个人的左右位置，不修改原始 JSON 和消息内容。</p>
+              <button id="toggle-chat-swap" class="secondary-btn" type="button">互换聊天位置</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
             <h2>当前选择</h2>
             <button id="clear-selection" class="ghost-btn" type="button">清空</button>
           </div>
