@@ -241,6 +241,28 @@ textarea {
   font-weight: 600;
 }
 
+.mapping-preview-card {
+  padding: 14px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid var(--line);
+}
+
+.mapping-preview-card + .mapping-preview-card {
+  margin-top: 12px;
+}
+
+.mapping-preview-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.mapping-preview-grid h4 {
+  margin: 0 0 8px;
+}
+
 .meta-stack {
   display: flex;
   flex-wrap: wrap;
@@ -835,5 +857,9 @@ textarea {
   .loading-overlay {
     inset: 72px 10px 10px;
     padding: 10px;
+  }
+
+  .mapping-preview-grid {
+    grid-template-columns: 1fr;
   }
 }

@@ -9,13 +9,13 @@ const state = {
   selectedMessageIndices: [],
   editingAnnotationId: null,
   reviewRows: [],
+  pendingMappingPreview: [],
   messageRowRefs: new Map(),
   messageOrderChipRefs: new Map(),
   messageCountChipRefs: new Map(),
   activeLoadToken: null,
   sidebarOpen: false,
   roleSwap: false,
-  chatSwap: false,
   virtual: {
     heights: [],
     offsets: [0],
@@ -40,8 +40,6 @@ const els = {
   toggleRoleSwap: document.querySelector('#toggle-role-swap'),
   applyRoleMapping: document.querySelector('#apply-role-mapping'),
   roleSwapState: document.querySelector('#role-swap-state'),
-  toggleChatSwap: document.querySelector('#toggle-chat-swap'),
-  chatSwapState: document.querySelector('#chat-swap-state'),
   clearSelection: document.querySelector('#clear-selection'),
   reviewSelection: document.querySelector('#review-selection'),
   jumpEarliest: document.querySelector('#jump-earliest'),
@@ -52,6 +50,11 @@ const els = {
   annotationEmpty: document.querySelector('#annotation-empty'),
   annotationList: document.querySelector('#annotation-list'),
   exportAnnotations: document.querySelector('#export-annotations'),
+  mappingPreviewDialog: document.querySelector('#mapping-preview-dialog'),
+  closeMappingPreviewDialog: document.querySelector('#close-mapping-preview-dialog'),
+  mappingPreviewSummary: document.querySelector('#mapping-preview-summary'),
+  mappingPreviewList: document.querySelector('#mapping-preview-list'),
+  confirmApplyRoleMapping: document.querySelector('#confirm-apply-role-mapping'),
   chatTitle: document.querySelector('#chat-title'),
   schemaNote: document.querySelector('#schema-note'),
   chatList: document.querySelector('#chat-list'),
@@ -197,10 +200,10 @@ function inferSpeakerName(message) {
 
 function bubbleClassForMessage(message) {
   if (message?.senderKey === 'self') {
-    return state.chatSwap ? 'incoming' : 'outgoing';
+    return 'outgoing';
   }
   if (message?.senderKey === 'peer') {
-    return state.chatSwap ? 'outgoing' : 'incoming';
+    return 'incoming';
   }
   return 'system';
 }
@@ -419,7 +422,6 @@ function renderSelectedFileCard() {
 
 function renderSwapStates() {
   els.roleSwapState.textContent = state.roleSwap ? '反向' : '正向';
-  els.chatSwapState.textContent = state.chatSwap ? '反向' : '正向';
 }
 
 function inferStoredSpeakerKey(message) {
@@ -536,6 +538,10 @@ function datasetForAnnotation(annotation) {
   if (Array.isArray(annotation?.selectedMessages) && annotation.selectedMessages.length > 0) {
     return { messages: buildDatasetMessages(annotation.selectedMessages) };
   }
+  return annotation?.dataset || { messages: [] };
+}
+
+function savedDatasetForAnnotation(annotation) {
   return annotation?.dataset || { messages: [] };
 }
 
@@ -807,7 +813,6 @@ async function loadChat(fileId = '') {
   if (fileId) state.currentFileId = fileId;
   state.selectedMessageIndices = [];
   state.roleSwap = false;
-  state.chatSwap = false;
   renderSwapStates();
 
   setLoadingState({
@@ -969,14 +974,91 @@ function exportAnnotations() {
   URL.revokeObjectURL(url);
 }
 
-async function applyRoleMappingToAllAnnotations() {
+function buildMappingPreview() {
+  const previews = state.annotations.map((annotation) => {
+    const before = savedDatasetForAnnotation(annotation);
+    const after = datasetForAnnotation(annotation);
+    return {
+      id: annotation.id,
+      label: annotation.label || '未命名标注',
+      selectedCount: annotation.selectedMessages.length,
+      before,
+      after,
+      changed: JSON.stringify(before) !== JSON.stringify(after),
+    };
+  });
+
+  return previews;
+}
+
+function renderMappingPreviewDialog() {
+  const previews = state.pendingMappingPreview;
+  const changedCount = previews.filter((item) => item.changed).length;
+  const mappingLabel = state.roleSwap ? '我=assistant，对方=user' : '我=user，对方=assistant';
+
+  els.mappingPreviewSummary.innerHTML = `
+    <strong>当前映射：${escapeHtml(mappingLabel)}</strong>
+    <p class="annotation-preview">将检查并重写当前文件的全部 ${previews.length} 条标注，其中预计变更 ${changedCount} 条。</p>
+  `;
+
+  els.mappingPreviewList.innerHTML = previews
+    .filter((item) => item.changed)
+    .slice(0, 3)
+    .map(
+      (item) => `
+        <article class="mapping-preview-card">
+          <div class="annotation-card-header">
+            <div>
+              <strong>${escapeHtml(item.label)}</strong>
+              <p class="muted">${item.selectedCount} 条原消息</p>
+            </div>
+            <div class="annotation-chip">将被重写</div>
+          </div>
+          <div class="mapping-preview-grid">
+            <div>
+              <h4>当前保存的 dataset</h4>
+              <pre class="annotation-json">${escapeHtml(JSON.stringify(item.before, null, 2))}</pre>
+            </div>
+            <div>
+              <h4>应用后的 dataset</h4>
+              <pre class="annotation-json">${escapeHtml(JSON.stringify(item.after, null, 2))}</pre>
+            </div>
+          </div>
+        </article>
+      `,
+    )
+    .join('');
+
+  if (!els.mappingPreviewList.innerHTML) {
+    els.mappingPreviewList.innerHTML = '<div class="placeholder-card">当前映射与已保存标注一致，没有需要重写的内容。</div>';
+  }
+}
+
+function openMappingPreviewDialog() {
+  renderMappingPreviewDialog();
+  els.mappingPreviewDialog.showModal();
+}
+
+function closeMappingPreviewDialog() {
+  state.pendingMappingPreview = [];
+  els.mappingPreviewDialog.close();
+}
+
+function applyRoleMappingToAllAnnotations() {
   if (!state.currentFilePath || !state.annotations.length) {
     alert('当前文件还没有可重算映射的标注。');
     return;
   }
 
-  const mappingLabel = state.roleSwap ? '我=assistant，对方=user' : '我=user，对方=assistant';
-  if (!confirm(`确定要将当前角色映射应用到当前文件的全部标注吗？\n\n当前映射：${mappingLabel}\n\n这会直接重写已保存标注里的 dataset 和 role。`)) {
+  state.pendingMappingPreview = buildMappingPreview();
+  openMappingPreviewDialog();
+}
+
+async function confirmApplyRoleMapping() {
+  const changedCount = state.pendingMappingPreview.filter((item) => item.changed).length;
+  if (changedCount === 0) {
+    alert('当前映射与已保存标注一致，无需应用。');
+    closeMappingPreviewDialog();
     return;
   }
 
@@ -994,6 +1076,7 @@ async function applyRoleMappingToAllAnnotations() {
   renderAnnotationSummary();
   renderAnnotationList();
   refreshMessageDecorations();
+  closeMappingPreviewDialog();
 }
 
 function handleRoleSwapToggle() {
@@ -1005,12 +1088,6 @@ function handleRoleSwapToggle() {
   renderSelectionList();
   renderAnnotationSummary();
   renderAnnotationList();
-}
-
-function handleChatSwapToggle() {
-  state.chatSwap = !state.chatSwap;
-  renderSwapStates();
-  scheduleVirtualRender(true);
 }
 
 function bindEvents() {
@@ -1026,7 +1103,6 @@ function bindEvents() {
   els.sidebarBackdrop.addEventListener('click', closeSidebar);
   els.toggleRoleSwap.addEventListener('click', handleRoleSwapToggle);
   els.applyRoleMapping.addEventListener('click', applyRoleMappingToAllAnnotations);
-  els.toggleChatSwap.addEventListener('click', handleChatSwapToggle);
 
   els.pickFile.addEventListener('click', async () => {
     const result = await fetchJson('/api/select-file', { method: 'POST' });
@@ -1061,6 +1137,8 @@ function bindEvents() {
   els.closeAnnotationsDialog.addEventListener('click', () => {
     els.annotationsDialog.close();
   });
+  els.closeMappingPreviewDialog.addEventListener('click', closeMappingPreviewDialog);
+  els.confirmApplyRoleMapping.addEventListener('click', confirmApplyRoleMapping);
 
   els.chatScroll.addEventListener('scroll', () => {
     scheduleVirtualRender();
