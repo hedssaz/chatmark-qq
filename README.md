@@ -26,8 +26,8 @@ A local-first annotation tool for QQ chat exports, designed for reviewing conver
   Jump back to the farthest annotated position
 - 标注结果和进度文件保存在原聊天文件同目录  
   Saves annotation output and progress files next to the original chat file
-- 表情包下载支持自定义前缀、`rkey` 提取、按出现次数筛选，并将 `[图片: xxx.png]` 导出为 `<stickerX,Ytimes>`  
-  Sticker downloads support a custom host, `rkey` extraction, frequency filtering, and export `[图片: xxx.png]` as `<stickerX,Ytimes>`
+- 支持下载表情包（需表情包图链中的rkey）  
+  Supports downloading stickers (requires `rkey` from sticker image URLs)
 
 ## 工作流程 | Workflow
 
@@ -88,14 +88,6 @@ your-chat.annotation-progress.json
 your-chat.sticker-map.json
 your-chat.stickers/
 ```
-
-## 表情包下载说明 | Sticker Download Notes
-
-如果你要批量下载表情包图片，需要先在 QQ 里自己发一个表情包，然后把可正常访问的图片直链复制到设置里的“可用图链”输入框，让工具提取 `rkey` 后再下载。  
-If you want to batch-download sticker images, first send yourself a sticker in QQ, copy a working direct image URL into the Settings panel, let the tool extract the `rkey`, and then start downloading.
-
-这是因为很多 QCE 导出的图片链接本身没有 `rkey`，这类地址通常会直接返回 `HTTP 400`。  
-This is necessary because many image URLs exported by QCE do not include an `rkey`, and those URLs usually return `HTTP 400`.
 
 ## 当前状态 | Current Status
 
