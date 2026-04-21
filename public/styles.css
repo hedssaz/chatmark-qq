@@ -74,6 +74,12 @@ input {
   gap: 12px;
 }
 
+.brand-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .sidebar-close,
 .sidebar-toggle {
   display: none;
@@ -261,6 +267,35 @@ textarea {
 
 .mapping-preview-grid h4 {
   margin: 0 0 8px;
+}
+
+.mapping-preview-list {
+  margin-top: 12px;
+}
+
+.dialog-toolbar {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+}
+
+.settings-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.settings-card {
+  padding: 16px;
+  border-radius: 20px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.compact-actions {
+  margin-top: 14px;
 }
 
 .meta-stack {
@@ -573,6 +608,54 @@ textarea {
 .msg-content {
   line-height: 1.6;
   word-break: break-word;
+}
+
+.msg-sticker-gallery {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.msg-sticker-item,
+.msg-sticker-fallback {
+  width: min(180px, 100%);
+  border-radius: 16px;
+  border: 1px solid rgba(84, 61, 37, 0.12);
+  background: rgba(255, 255, 255, 0.76);
+  overflow: hidden;
+}
+
+.msg-sticker-item {
+  margin: 0;
+}
+
+.msg-sticker-img {
+  display: block;
+  width: 100%;
+  max-width: 180px;
+  max-height: 180px;
+  object-fit: contain;
+  background: rgba(245, 241, 235, 0.88);
+}
+
+.msg-sticker-caption {
+  padding: 8px 10px 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+  word-break: break-word;
+}
+
+.msg-sticker-fallback {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+}
+
+.msg-sticker-fallback.failed {
+  border-color: rgba(181, 65, 65, 0.24);
+  background: rgba(181, 65, 65, 0.08);
 }
 
 .msg-side {

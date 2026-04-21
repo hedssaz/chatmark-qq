@@ -14,13 +14,20 @@ const PORT = 41739;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const CHAT_DIR = path.resolve(__dirname, '..', 'chathistory');
 const execFileAsync = promisify(execFile);
+const DEFAULT_STICKER_HOST = 'https://gchat.qpic.cn';
+const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp']);
 
 const MIME_TYPES = {
   '.css': 'text/css; charset=utf-8',
+  '.gif': 'image/gif',
   '.html': 'text/html; charset=utf-8',
+  '.jpeg': 'image/jpeg',
+  '.jpg': 'image/jpeg',
   '.js': 'application/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png',
   '.svg': 'image/svg+xml',
+  '.webp': 'image/webp',
   '.webmanifest': 'application/manifest+json; charset=utf-8',
 };
 
@@ -29,7 +36,220 @@ function getDerivedPaths(chatFilePath) {
   return {
     annotationsPath: path.join(parsed.dir, `${parsed.name}.annotations.json`),
     progressPath: path.join(parsed.dir, `${parsed.name}.annotation-progress.json`),
+    stickerConfigPath: path.join(parsed.dir, `${parsed.name}.sticker-map.json`),
+    stickerDir: path.join(parsed.dir, `${parsed.name}.stickers`),
   };
+}
+
+function normalizeStickerFilename(value) {
+  return path.basename(normalizeText(value));
+}
+
+function normalizeStickerHost(value) {
+  const raw = `${value ?? ''}`.trim();
+  if (!raw) return DEFAULT_STICKER_HOST;
+  const withProtocol = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  return withProtocol.replace(/\/+$/, '');
+}
+
+function resolveStickerRemoteUrl(value, stickerHost = DEFAULT_STICKER_HOST) {
+  const raw = `${value ?? ''}`.trim();
+  if (!raw) return '';
+  if (/^https?:\/\//i.test(raw)) return raw;
+  const host = normalizeStickerHost(stickerHost);
+  if (raw.startsWith('/')) return `${host}${raw}`;
+  return `${host}/${raw.replace(/^\/+/, '')}`;
+}
+
+async function pathExists(targetPath) {
+  try {
+    await fs.access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function extractStickerEntriesFromMessage(message) {
+  const entries = [];
+  const seen = new Set();
+  const pushEntry = (resource) => {
+    const filename = normalizeStickerFilename(resource?.filename || resource?.data?.filename);
+    const remoteUrl = resolveStickerRemoteUrl(resource?.url || resource?.data?.url);
+    if (!filename || seen.has(filename)) return;
+    seen.add(filename);
+    entries.push({
+      filename,
+      relativeUrl: `${resource?.url || resource?.data?.url || ''}`,
+      remoteUrl,
+      size: Number(resource?.size || resource?.data?.size || 0),
+      width: Number(resource?.width || resource?.data?.width || 0),
+      height: Number(resource?.height || resource?.data?.height || 0),
+    });
+  };
+
+  for (const resource of message?.content?.resources || []) {
+    if (`${resource?.type ?? ''}` === 'image') {
+      pushEntry(resource);
+    }
+  }
+
+  for (const element of message?.content?.elements || []) {
+    if (`${element?.type ?? ''}` === 'image') {
+      pushEntry(element?.data || {});
+    }
+  }
+
+  return entries;
+}
+
+function buildStickerCatalog(messages) {
+  const byFilename = new Map();
+  let totalOccurrences = 0;
+
+  for (let index = 0; index < messages.length; index += 1) {
+    const entries = extractStickerEntriesFromMessage(messages[index]);
+    for (const entry of entries) {
+      totalOccurrences += 1;
+      const existing = byFilename.get(entry.filename);
+      if (existing) {
+        existing.occurrences += 1;
+        if (!existing.remoteUrl && entry.remoteUrl) existing.remoteUrl = entry.remoteUrl;
+        if (!existing.relativeUrl && entry.relativeUrl) existing.relativeUrl = entry.relativeUrl;
+        continue;
+      }
+
+      byFilename.set(entry.filename, {
+        ...entry,
+        occurrences: 1,
+        firstSeenIndex: index,
+      });
+    }
+  }
+
+  const items = [...byFilename.values()].sort((a, b) => a.firstSeenIndex - b.firstSeenIndex);
+  return {
+    totalOccurrences,
+    items,
+  };
+}
+
+async function readStickerConfig(chatFilePath) {
+  const { stickerConfigPath } = getDerivedPaths(chatFilePath);
+  try {
+    const raw = await fs.readFile(stickerConfigPath, 'utf8');
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed?.stickers) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function ensureStickerConfig(chatFilePath, messages) {
+  const derived = getDerivedPaths(chatFilePath);
+  const catalog = buildStickerCatalog(messages);
+  const existing = (await readStickerConfig(chatFilePath)) || {};
+  const stickerHost = normalizeStickerHost(existing?.stickerHost || DEFAULT_STICKER_HOST);
+  const existingMap = new Map(
+    (Array.isArray(existing?.stickers) ? existing.stickers : [])
+      .map((item) => [normalizeStickerFilename(item?.filename), item])
+      .filter(([filename]) => filename),
+  );
+
+  let nextId = Math.max(0, ...(Array.isArray(existing?.stickers) ? existing.stickers.map((item) => Number(item?.id) || 0) : [0])) + 1;
+  const stickers = [];
+
+  for (const entry of catalog.items) {
+    const current = existingMap.get(entry.filename);
+    const id = Number(current?.id) > 0 ? Number(current.id) : nextId++;
+    const localFile = path.join(derived.stickerDir, entry.filename);
+    const downloaded = await pathExists(localFile);
+    stickers.push({
+      id,
+      filename: entry.filename,
+      occurrences: entry.occurrences,
+      firstSeenIndex: entry.firstSeenIndex,
+      relativeUrl: entry.relativeUrl || `${current?.relativeUrl ?? ''}`,
+      remoteUrl: resolveStickerRemoteUrl(entry.relativeUrl || current?.relativeUrl || entry.remoteUrl || current?.remoteUrl || '', stickerHost),
+      localFile,
+      downloaded,
+      downloadError: downloaded ? '' : `${current?.downloadError ?? ''}`,
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  const config = {
+    version: 1,
+    sourceFile: chatFilePath,
+    stickerHost,
+    exportTokenFormat: '<stickerX,Ytimes>',
+    exportRule: 'X is the stable sticker id from this file, Y is the uninterrupted repeat count for the same sticker by the same speaker.',
+    downloadFolder: path.basename(derived.stickerDir),
+    totalOccurrences: catalog.totalOccurrences,
+    uniqueCount: stickers.length,
+    updatedAt: new Date().toISOString(),
+    stickers,
+  };
+
+  await fs.writeFile(derived.stickerConfigPath, JSON.stringify(config, null, 2), 'utf8');
+  return config;
+}
+
+function summarizeStickerPack(stickerConfig) {
+  const stickers = Array.isArray(stickerConfig?.stickers) ? stickerConfig.stickers : [];
+  const downloadedCount = stickers.filter((item) => item.downloaded).length;
+  const failedCount = stickers.filter((item) => !item.downloaded && normalizeText(item.downloadError)).length;
+  return {
+    host: normalizeStickerHost(stickerConfig?.stickerHost || DEFAULT_STICKER_HOST),
+    configPath: stickerConfig?.sourceFile ? getDerivedPaths(stickerConfig.sourceFile).stickerConfigPath : '',
+    downloadFolder: stickerConfig?.downloadFolder || '',
+    totalImages: Number(stickerConfig?.totalOccurrences ?? 0),
+    uniqueStickers: stickers.length,
+    downloadedCount,
+    failedCount,
+    items: stickers.map((item) => ({
+      id: Number(item?.id) || 0,
+      filename: normalizeStickerFilename(item?.filename),
+      occurrences: Number(item?.occurrences ?? 0),
+      remoteUrl: `${item?.remoteUrl ?? ''}`,
+      relativeUrl: `${item?.relativeUrl ?? ''}`,
+      downloaded: Boolean(item?.downloaded),
+      downloadError: `${item?.downloadError ?? ''}`,
+      localFile: `${item?.localFile ?? ''}`,
+      previewUrl: item?.downloaded ? `/api/sticker-file?path=${encodeURIComponent(item.localFile)}` : '',
+    })),
+  };
+}
+
+async function downloadStickerFile(sticker) {
+  const remoteUrl = `${sticker?.remoteUrl ?? ''}`;
+  if (!remoteUrl) {
+    return { downloaded: false, error: 'Missing remote URL' };
+  }
+
+  const response = await fetch(remoteUrl);
+  if (!response.ok) {
+    return { downloaded: false, error: `HTTP ${response.status}` };
+  }
+
+  const arrayBuffer = await response.arrayBuffer();
+  await fs.writeFile(sticker.localFile, Buffer.from(arrayBuffer));
+  return { downloaded: true, error: '' };
+}
+
+async function updateStickerHost(chatFilePath, messages, nextHost) {
+  const derived = getDerivedPaths(chatFilePath);
+  const config = await ensureStickerConfig(chatFilePath, messages);
+  const stickerHost = normalizeStickerHost(nextHost);
+  config.stickerHost = stickerHost;
+  config.updatedAt = new Date().toISOString();
+  config.stickers = (config.stickers || []).map((item) => ({
+    ...item,
+    remoteUrl: resolveStickerRemoteUrl(item?.relativeUrl || item?.remoteUrl || '', stickerHost),
+    updatedAt: new Date().toISOString(),
+  }));
+  await fs.writeFile(derived.stickerConfigPath, JSON.stringify(config, null, 2), 'utf8');
+  return config;
 }
 
 async function ensureAnnotationStore(chatFilePath) {
@@ -263,16 +483,34 @@ function displayNameForSender(senderKey, message, identity) {
   return normalizeText(message?.sender?.name) || 'system';
 }
 
-function normalizeChatExport(chatData, fileId, fullPath) {
+async function normalizeChatExport(chatData, fileId, fullPath) {
   const chatInfo = chatData?.chatInfo || {};
   const messages = Array.isArray(chatData?.messages) ? chatData.messages : [];
   const derivedPaths = getDerivedPaths(fullPath);
   const identity = resolveIdentity(chatData);
+  const stickerConfig = await ensureStickerConfig(fullPath, messages);
+  const stickerMap = new Map(summarizeStickerPack(stickerConfig).items.map((item) => [item.filename, item]));
 
   const normalizedMessages = messages.map((message, index) => {
     const senderUid = normalizeText(message?.sender?.uid);
     const senderUin = normalizeText(message?.sender?.uin);
     const senderKey = senderKeyForMessage(message, identity);
+    const stickers = extractStickerEntriesFromMessage(message)
+      .map((item) => {
+        const mapped = stickerMap.get(item.filename);
+        return mapped
+          ? {
+              id: mapped.id,
+              filename: mapped.filename,
+              downloaded: mapped.downloaded,
+              downloadError: mapped.downloadError,
+              previewUrl: mapped.previewUrl,
+              remoteUrl: mapped.remoteUrl,
+              relativeUrl: mapped.relativeUrl,
+            }
+          : null;
+      })
+      .filter(Boolean);
 
     return {
       index,
@@ -291,6 +529,7 @@ function normalizeChatExport(chatData, fileId, fullPath) {
       isSelf: senderKey === 'self',
       isPeer: senderKey === 'peer',
       text: `${message?.content?.text ?? ''}`,
+      stickers,
     };
   });
 
@@ -299,6 +538,8 @@ function normalizeChatExport(chatData, fileId, fullPath) {
     filePath: fullPath,
     annotationPath: derivedPaths.annotationsPath,
     progressPath: derivedPaths.progressPath,
+    stickerConfigPath: derivedPaths.stickerConfigPath,
+    stickerDir: derivedPaths.stickerDir,
     schema: {
       sourceRepo: 'shuakami/qq-chat-exporter',
       sourceFiles: [
@@ -317,6 +558,7 @@ function normalizeChatExport(chatData, fileId, fullPath) {
     },
     identity,
     statistics: chatData?.statistics ?? {},
+    stickerPack: summarizeStickerPack(stickerConfig),
     messages: normalizedMessages,
   };
 }
@@ -436,40 +678,107 @@ function roleTokenForReference(token, identity, roleSwap) {
   return normalized;
 }
 
-function transformDatasetText(text, identity, roleSwap) {
-  return `${text ?? ''}`.replace(/\[回复\s+([^:\]：]+)\s*([:：])/g, (_match, target, punctuation) => {
-    return `[回复 ${roleTokenForReference(target, identity, roleSwap)}${punctuation}`;
-  });
+function stickerMapFromConfig(stickerConfig) {
+  return new Map((Array.isArray(stickerConfig?.stickers) ? stickerConfig.stickers : []).map((item) => [normalizeStickerFilename(item?.filename), item]));
 }
 
-function buildDatasetMessagesFromSelectedMessages(selectedMessages, identity, roleSwap) {
+function inferStickersFromStoredMessage(message, stickerConfig) {
+  const directStickers = Array.isArray(message?.stickers) ? message.stickers : [];
+  if (directStickers.length) {
+    return directStickers
+      .map((item) => ({
+        id: Number(item?.id || item?.stickerId) || 0,
+        filename: normalizeStickerFilename(item?.filename),
+      }))
+      .filter((item) => item.id > 0 && item.filename);
+  }
+
+  const stickerMap = stickerMapFromConfig(stickerConfig);
+  const filenames = [...`${message?.text ?? ''}`.matchAll(/\[图片:\s*([^\]]+)\]/g)].map((match) => normalizeStickerFilename(match[1]));
+  return filenames
+    .map((filename) => {
+      const item = stickerMap.get(filename);
+      return item ? { id: Number(item.id) || 0, filename } : null;
+    })
+    .filter(Boolean);
+}
+
+function isPureStickerMessage(text, stickers) {
+  if (!stickers.length) return false;
+  const normalized = `${text ?? ''}`.trim();
+  if (!normalized) return false;
+  const withoutPlaceholders = normalized.replace(/\[图片:\s*[^\]]+\]/g, '').replace(/\s+/g, '');
+  return withoutPlaceholders.length === 0;
+}
+
+function transformDatasetText(text, identity, roleSwap, stickers = []) {
+  const stickerMap = new Map(stickers.map((item) => [normalizeStickerFilename(item?.filename), Number(item?.id || item?.stickerId) || 0]));
+  return `${text ?? ''}`
+    .replace(/\[回复\s+([^:\]：]+)\s*([:：])/g, (_match, target, punctuation) => {
+      return `[回复 ${roleTokenForReference(target, identity, roleSwap)}${punctuation}`;
+    })
+    .replace(/\[图片:\s*([^\]]+)\]/g, (_match, filename) => {
+      const stickerId = stickerMap.get(normalizeStickerFilename(filename));
+      return stickerId ? `<sticker${stickerId},1times>` : `[图片: ${normalizeStickerFilename(filename)}]`;
+    });
+}
+
+function buildSegmentsFromSelectedMessage(rawMessage, identity, roleSwap, stickerConfig) {
+  const stickers = inferStickersFromStoredMessage(rawMessage, stickerConfig);
+  const text = `${rawMessage?.text ?? ''}`.trim();
+  if (isPureStickerMessage(text, stickers)) {
+    return stickers.map((item) => ({ kind: 'sticker', stickerId: item.id }));
+  }
+
+  const transformedText = transformDatasetText(text, identity, roleSwap, stickers);
+  if (!transformedText) return [];
+  return [{ kind: 'text', content: transformedText }];
+}
+
+function buildDatasetMessagesFromSelectedMessages(selectedMessages, identity, roleSwap, stickerConfig) {
   const groups = [];
 
   for (const rawMessage of selectedMessages || []) {
     const speakerKey = normalizeStoredSpeakerKey(rawMessage, identity);
     const role = roleForSpeakerKey(speakerKey, roleSwap);
-    const text = transformDatasetText(`${rawMessage?.text ?? ''}`.trim(), identity, roleSwap);
-    if (!role || !text) continue;
+    const segments = buildSegmentsFromSelectedMessage(rawMessage, identity, roleSwap, stickerConfig);
+    if (!role || !segments.length) continue;
 
     const previous = groups.at(-1);
-    if (previous && previous.role === role) {
-      previous.lines.push(text);
-      continue;
-    }
+    const group = previous && previous.role === role
+      ? previous
+      : (() => {
+          const nextGroup = { role, lines: [] };
+          groups.push(nextGroup);
+          return nextGroup;
+        })();
 
-    groups.push({
-      role,
-      lines: [text],
-    });
+    for (const segment of segments) {
+      if (segment.kind === 'sticker') {
+        const lastLine = group.lines.at(-1);
+        if (lastLine?.kind === 'sticker' && lastLine.stickerId === segment.stickerId) {
+          lastLine.count += 1;
+        } else {
+          group.lines.push({ kind: 'sticker', stickerId: segment.stickerId, count: 1 });
+        }
+        continue;
+      }
+
+      if (segment.content) {
+        group.lines.push({ kind: 'text', content: segment.content });
+      }
+    }
   }
 
   return groups.map((group) => ({
     role: group.role,
-    content: group.lines.join(' <MSG_SEP> '),
+    content: group.lines
+      .map((line) => (line.kind === 'sticker' ? `<sticker${line.stickerId},${line.count}times>` : line.content))
+      .join(' <MSG_SEP> '),
   }));
 }
 
-function remapAnnotation(annotation, identity, roleSwap) {
+function remapAnnotation(annotation, identity, roleSwap, stickerConfig) {
   const selectedMessages = (annotation?.selectedMessages || []).map((message) => {
     const speakerKey = normalizeStoredSpeakerKey(message, identity);
     return {
@@ -483,7 +792,7 @@ function remapAnnotation(annotation, identity, roleSwap) {
     ...annotation,
     selectedMessages,
     dataset: {
-      messages: buildDatasetMessagesFromSelectedMessages(selectedMessages, identity, roleSwap),
+      messages: buildDatasetMessagesFromSelectedMessages(selectedMessages, identity, roleSwap, stickerConfig),
     },
     updatedAt: new Date().toISOString(),
   };
@@ -510,6 +819,10 @@ function sanitizeAnnotationPayload(body) {
       senderName: `${message?.senderName ?? ''}`,
       senderUid: `${message?.senderUid ?? ''}`,
       senderUin: `${message?.senderUin ?? ''}`,
+      stickers: (Array.isArray(message?.stickers) ? message.stickers : []).map((sticker) => ({
+        id: Number(sticker?.id || sticker?.stickerId) || 0,
+        filename: normalizeStickerFilename(sticker?.filename),
+      })),
       speakerKey: ['self', 'peer', 'system', 'other'].includes(message?.speakerKey) ? message.speakerKey : 'other',
       role: normalizeSavedRole(message?.role),
       text: `${message?.text ?? ''}`,
@@ -562,7 +875,99 @@ function createAppServer() {
 
         const raw = await fs.readFile(fullPath, 'utf8');
         const chatData = JSON.parse(raw);
-        sendJson(res, 200, normalizeChatExport(chatData, fileId || path.basename(fullPath), fullPath));
+        sendJson(res, 200, await normalizeChatExport(chatData, fileId || path.basename(fullPath), fullPath));
+        return;
+      }
+
+      if (req.method === 'GET' && requestUrl.pathname === '/api/sticker-file') {
+        const targetPath = path.resolve(requestUrl.searchParams.get('path') || '');
+        if (!targetPath || !IMAGE_EXTENSIONS.has(path.extname(targetPath).toLowerCase())) {
+          sendText(res, 400, 'Invalid image path');
+          return;
+        }
+
+        try {
+          const stat = await fs.stat(targetPath);
+          if (!stat.isFile()) {
+            sendText(res, 404, 'Not found');
+            return;
+          }
+
+          const ext = path.extname(targetPath).toLowerCase();
+          res.writeHead(200, {
+            'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
+            'Cache-Control': 'no-store',
+          });
+          res.end(await fs.readFile(targetPath));
+        } catch {
+          sendText(res, 404, 'Not found');
+        }
+        return;
+      }
+
+      if (req.method === 'POST' && requestUrl.pathname === '/api/stickers/download') {
+        const body = await readRequestBody(req);
+        const fileId = typeof body?.fileId === 'string' ? body.fileId : '';
+        const filePath = typeof body?.filePath === 'string' ? body.filePath : '';
+        const fullPath = await resolveChatFile(fileId, filePath);
+        if (!fullPath) {
+          sendJson(res, 400, { error: '聊天记录文件无效。' });
+          return;
+        }
+
+        const raw = await fs.readFile(fullPath, 'utf8');
+        const chatData = JSON.parse(raw);
+        const stickerConfig = await ensureStickerConfig(fullPath, Array.isArray(chatData?.messages) ? chatData.messages : []);
+        await fs.mkdir(getDerivedPaths(fullPath).stickerDir, { recursive: true });
+        let downloadedNow = 0;
+        let skipped = 0;
+        let failed = 0;
+
+        for (const sticker of stickerConfig.stickers) {
+          if (await pathExists(sticker.localFile)) {
+            sticker.downloaded = true;
+            sticker.downloadError = '';
+            skipped += 1;
+            continue;
+          }
+
+          const result = await downloadStickerFile(sticker);
+          sticker.downloaded = result.downloaded;
+          sticker.downloadError = result.error;
+          if (result.downloaded) downloadedNow += 1;
+          else failed += 1;
+        }
+
+        stickerConfig.updatedAt = new Date().toISOString();
+        await fs.writeFile(getDerivedPaths(fullPath).stickerConfigPath, JSON.stringify(stickerConfig, null, 2), 'utf8');
+
+        sendJson(res, 200, {
+          downloadedNow,
+          skipped,
+          failed,
+          stickerPack: summarizeStickerPack(stickerConfig),
+        });
+        return;
+      }
+
+      if (req.method === 'POST' && requestUrl.pathname === '/api/stickers/settings') {
+        const body = await readRequestBody(req);
+        const fileId = typeof body?.fileId === 'string' ? body.fileId : '';
+        const filePath = typeof body?.filePath === 'string' ? body.filePath : '';
+        const stickerHost = typeof body?.stickerHost === 'string' ? body.stickerHost : '';
+        const fullPath = await resolveChatFile(fileId, filePath);
+        if (!fullPath) {
+          sendJson(res, 400, { error: '聊天记录文件无效。' });
+          return;
+        }
+
+        const raw = await fs.readFile(fullPath, 'utf8');
+        const chatData = JSON.parse(raw);
+        const config = await updateStickerHost(fullPath, Array.isArray(chatData?.messages) ? chatData.messages : [], stickerHost);
+        sendJson(res, 200, {
+          stickerPack: summarizeStickerPack(config),
+          stickerConfigPath: getDerivedPaths(fullPath).stickerConfigPath,
+        });
         return;
       }
 
@@ -626,8 +1031,9 @@ function createAppServer() {
         const raw = await fs.readFile(fullPath, 'utf8');
         const chatData = JSON.parse(raw);
         const identity = resolveIdentity(chatData);
+        const stickerConfig = await ensureStickerConfig(fullPath, Array.isArray(chatData?.messages) ? chatData.messages : []);
         const store = await readAnnotations(fullPath);
-        store.annotations = store.annotations.map((annotation) => remapAnnotation(annotation, identity, roleSwap));
+        store.annotations = store.annotations.map((annotation) => remapAnnotation(annotation, identity, roleSwap, stickerConfig));
         await writeAnnotations(fullPath, store);
 
         sendJson(res, 200, {

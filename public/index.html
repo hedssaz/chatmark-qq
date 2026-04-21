@@ -17,7 +17,10 @@
               <p class="eyebrow">QQ Chat Exporter JSON</p>
               <h1>聊天标注工具</h1>
             </div>
-            <button id="sidebar-close" class="ghost-btn sidebar-close" type="button">关闭</button>
+            <div class="brand-actions">
+              <button id="open-settings" class="ghost-btn" type="button">设置</button>
+              <button id="sidebar-close" class="ghost-btn sidebar-close" type="button">关闭</button>
+            </div>
           </div>
         </div>
 
@@ -52,23 +55,6 @@
             </div>
           </div>
           <div id="annotation-summary" class="placeholder-card">当前文件还没有任何标注。</div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-header">
-            <h2>映射控制</h2>
-          </div>
-          <div class="swap-grid">
-            <div class="swap-card">
-              <div class="swap-topline">
-                <strong>User / Assistant</strong>
-                <span id="role-swap-state" class="state-pill">正向</span>
-              </div>
-              <p class="swap-description">控制导出的 `dataset.messages[].role`，默认是我=`user`，对方=`assistant`。</p>
-              <button id="toggle-role-swap" class="secondary-btn" type="button">互换 User / Assistant</button>
-              <button id="apply-role-mapping" class="ghost-btn apply-mapping-btn" type="button">将当前角色映射应用到全部标注</button>
-            </div>
-          </div>
         </section>
       </aside>
 
@@ -161,6 +147,54 @@
       </form>
     </dialog>
 
+    <dialog id="settings-dialog" class="review-dialog">
+      <form method="dialog" class="dialog-shell">
+        <header class="dialog-header">
+          <div>
+            <p class="eyebrow">Settings</p>
+            <h2>设置</h2>
+          </div>
+          <button id="close-settings-dialog" class="ghost-btn" type="button">关闭</button>
+        </header>
+
+        <section class="dialog-content single-column">
+          <div class="dialog-column settings-stack">
+            <section class="settings-card">
+              <div class="panel-header compact">
+                <div>
+                  <h3>表情包管理</h3>
+                  <p class="muted">修改图片下载前缀、查看统计并下载图片。默认前缀是 `https://gchat.qpic.cn`。</p>
+                </div>
+              </div>
+              <label class="inline-input">
+                <span>表情包前缀</span>
+                <input id="sticker-host-input" type="text" placeholder="https://gchat.qpic.cn" />
+              </label>
+              <div class="button-row compact-actions">
+                <button id="save-sticker-host" class="secondary-btn" type="button">保存前缀</button>
+                <button id="download-stickers" class="primary-btn" type="button">下载图片</button>
+              </div>
+              <div id="sticker-summary" class="placeholder-card">载入聊天后会统计图片数量，并把下载和映射状态显示在这里。</div>
+            </section>
+
+            <section class="settings-card">
+              <div class="panel-header compact">
+                <div>
+                  <h3>映射控制</h3>
+                  <p class="muted">控制导出的 `dataset.messages[].role`，默认是我=`user`，对方=`assistant`。</p>
+                </div>
+                <span id="role-swap-state" class="state-pill">正向</span>
+              </div>
+              <div class="button-row compact-actions">
+                <button id="toggle-role-swap" class="secondary-btn" type="button">互换 User / Assistant</button>
+                <button id="apply-role-mapping" class="ghost-btn" type="button">将当前角色映射应用到全部标注</button>
+              </div>
+            </section>
+          </div>
+        </section>
+      </form>
+    </dialog>
+
     <dialog id="mapping-preview-dialog" class="review-dialog">
       <form method="dialog" class="dialog-shell">
         <header class="dialog-header">
@@ -174,13 +208,12 @@
         <section class="dialog-content single-column">
           <div class="dialog-column">
             <div id="mapping-preview-summary" class="placeholder-card">还没有可预览内容。</div>
-            <div id="mapping-preview-list" class="annotation-list"></div>
+            <div class="dialog-toolbar">
+              <button id="confirm-apply-role-mapping" class="primary-btn" type="button">确认应用到全部标注</button>
+            </div>
+            <div id="mapping-preview-list" class="mapping-preview-list"></div>
           </div>
         </section>
-
-        <footer class="dialog-footer">
-          <button id="confirm-apply-role-mapping" class="primary-btn" type="button">确认应用到全部标注</button>
-        </footer>
       </form>
     </dialog>
 

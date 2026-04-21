@@ -35,8 +35,13 @@ const els = {
   sidebarClose: document.querySelector('#sidebar-close'),
   sidebarBackdrop: document.querySelector('#sidebar-backdrop'),
   pickFile: document.querySelector('#pick-file'),
+  openSettings: document.querySelector('#open-settings'),
+  downloadStickers: document.querySelector('#download-stickers'),
+  saveStickerHost: document.querySelector('#save-sticker-host'),
   selectedFileCard: document.querySelector('#selected-file-card'),
   chatMeta: document.querySelector('#chat-meta'),
+  stickerSummary: document.querySelector('#sticker-summary'),
+  stickerHostInput: document.querySelector('#sticker-host-input'),
   toggleRoleSwap: document.querySelector('#toggle-role-swap'),
   applyRoleMapping: document.querySelector('#apply-role-mapping'),
   roleSwapState: document.querySelector('#role-swap-state'),
@@ -50,6 +55,8 @@ const els = {
   annotationEmpty: document.querySelector('#annotation-empty'),
   annotationList: document.querySelector('#annotation-list'),
   exportAnnotations: document.querySelector('#export-annotations'),
+  settingsDialog: document.querySelector('#settings-dialog'),
+  closeSettingsDialog: document.querySelector('#close-settings-dialog'),
   mappingPreviewDialog: document.querySelector('#mapping-preview-dialog'),
   closeMappingPreviewDialog: document.querySelector('#close-mapping-preview-dialog'),
   mappingPreviewSummary: document.querySelector('#mapping-preview-summary'),
@@ -90,6 +97,53 @@ function nl2br(value) {
 
 function normalizeText(value) {
   return `${value ?? ''}`.trim();
+}
+
+function normalizeStickerFilename(value) {
+  return `${value ?? ''}`.trim().split(/[\\/]/).pop() || '';
+}
+
+function stickerPack() {
+  return state.chat?.stickerPack || {
+    host: 'https://gchat.qpic.cn',
+    totalImages: 0,
+    uniqueStickers: 0,
+    downloadedCount: 0,
+    failedCount: 0,
+    items: [],
+  };
+}
+
+function stickerMap() {
+  return new Map((stickerPack().items || []).map((item) => [normalizeStickerFilename(item.filename), item]));
+}
+
+function inferRowStickers(row) {
+  if (Array.isArray(row?.stickers) && row.stickers.length) {
+    return row.stickers
+      .map((item) => ({
+        id: Number(item?.id || item?.stickerId) || 0,
+        filename: normalizeStickerFilename(item?.filename),
+      }))
+      .filter((item) => item.id > 0 && item.filename);
+  }
+
+  const map = stickerMap();
+  return [...`${row?.text ?? ''}`.matchAll(/\[图片:\s*([^\]]+)\]/g)]
+    .map((match) => normalizeStickerFilename(match[1]))
+    .map((filename) => {
+      const item = map.get(filename);
+      return item ? { id: Number(item.id) || 0, filename } : null;
+    })
+    .filter(Boolean);
+}
+
+function isPureStickerText(text, stickers) {
+  if (!stickers.length) return false;
+  const normalized = `${text ?? ''}`.trim();
+  if (!normalized) return false;
+  const withoutPlaceholders = normalized.replace(/\[图片:\s*[^\]]+\]/g, '').replace(/\s+/g, '');
+  return withoutPlaceholders.length === 0;
 }
 
 function pauseForFrame() {
@@ -145,9 +199,18 @@ async function fetchJson(url, options = {}) {
     headers: { 'Content-Type': 'application/json' },
     ...options,
   });
-  const data = await response.json();
+  const raw = await response.text();
+  let data = null;
+  try {
+    data = raw ? JSON.parse(raw) : null;
+  } catch {
+    data = null;
+  }
   if (!response.ok) {
-    throw new Error(data?.error || '请求失败');
+    throw new Error(data?.error || raw || `请求失败（HTTP ${response.status}）`);
+  }
+  if (data === null) {
+    throw new Error(`接口返回了非 JSON 内容（HTTP ${response.status}）`);
   }
   return data;
 }
@@ -208,13 +271,59 @@ function bubbleClassForMessage(message) {
   return 'system';
 }
 
+function renderStickerGalleryHtml(stickers) {
+  if (!stickers.length) return '';
+  return `
+    <div class="msg-sticker-gallery">
+      ${stickers
+        .map((sticker) => {
+          const filename = escapeHtml(sticker.filename || '未命名图片');
+          if (sticker.previewUrl) {
+            return `
+              <figure class="msg-sticker-item">
+                <img class="msg-sticker-img" src="${escapeHtml(sticker.previewUrl)}" alt="${filename}" loading="lazy" />
+                <figcaption class="msg-sticker-caption">#${escapeHtml(sticker.id || '?')} · ${filename}</figcaption>
+              </figure>
+            `;
+          }
+
+          const failed = sticker.downloadError ? ' failed' : '';
+          return `
+            <div class="msg-sticker-fallback${failed}">
+              <strong>#${escapeHtml(sticker.id || '?')}</strong>
+              <span>${filename}</span>
+            </div>
+          `;
+        })
+        .join('')}
+    </div>
+  `;
+}
+
+function renderMessageBodyHtml(message) {
+  const stickers = Array.isArray(message?.stickers) ? message.stickers : [];
+  const pureSticker = isPureStickerText(message?.text, stickers);
+  const textHtml = !pureSticker && `${message?.text ?? ''}`.trim()
+    ? `<div class="msg-content">${nl2br(message.text)}</div>`
+    : '';
+  const stickerHtml = renderStickerGalleryHtml(stickers);
+
+  if (textHtml || stickerHtml) {
+    return `${textHtml}${stickerHtml}`;
+  }
+
+  return '<div class="msg-content">[空消息]</div>';
+}
+
 function estimateMessageHeight(message) {
   const text = `${message.text || ''}`;
   const explicitLines = Math.max(1, text.split('\n').length);
   const wrappedLines = Math.max(explicitLines, Math.ceil(text.length / 26) || 1);
+  const stickerCount = Array.isArray(message?.stickers) ? message.stickers.length : 0;
   const base = message.senderKey === 'other' || message.senderKey === 'system' ? 82 : 106;
   const extra = Math.min(320, Math.max(0, wrappedLines - 1) * 20);
-  return base + extra + ITEM_GAP;
+  const stickerExtra = stickerCount > 0 ? Math.min(360, stickerCount * 156) : 0;
+  return base + extra + stickerExtra + ITEM_GAP;
 }
 
 function initializeVirtualState() {
@@ -297,7 +406,7 @@ function createMessageRow(message, count = 0, order = 0) {
       <span class="msg-sender">${escapeHtml(inferSpeakerName(message))}</span>
       <span class="msg-time">${escapeHtml(message.time || '')}</span>
     </div>
-    <div class="msg-content">${nl2br(message.text || '[空消息]')}</div>
+    ${renderMessageBodyHtml(message)}
   `;
 
   const side = document.createElement('div');
@@ -468,6 +577,12 @@ function buildReviewRowsFromSelection() {
       senderName: inferSpeakerName(message),
       senderUid: message.senderUid,
       senderUin: message.senderUin,
+      stickers: Array.isArray(message.stickers)
+        ? message.stickers.map((sticker) => ({
+            id: Number(sticker?.id) || 0,
+            filename: normalizeStickerFilename(sticker?.filename),
+          }))
+        : [],
       speakerKey: message.senderKey,
       role: roleForSpeakerKey(message.senderKey) || 'other',
       text: message.text,
@@ -505,10 +620,28 @@ function roleTokenForReference(token) {
   return normalized;
 }
 
-function transformTextForDataset(text) {
-  return `${text ?? ''}`.replace(/\[回复\s+([^:\]：]+)\s*([:：])/g, (_match, target, punctuation) => {
-    return `[回复 ${roleTokenForReference(target)}${punctuation}`;
-  });
+function transformTextForDataset(text, stickers = []) {
+  const localStickerMap = new Map(stickers.map((item) => [normalizeStickerFilename(item?.filename), Number(item?.id || item?.stickerId) || 0]));
+  return `${text ?? ''}`
+    .replace(/\[回复\s+([^:\]：]+)\s*([:：])/g, (_match, target, punctuation) => {
+      return `[回复 ${roleTokenForReference(target)}${punctuation}`;
+    })
+    .replace(/\[图片:\s*([^\]]+)\]/g, (_match, filename) => {
+      const stickerId = localStickerMap.get(normalizeStickerFilename(filename));
+      return stickerId ? `<sticker${stickerId},1times>` : `[图片: ${normalizeStickerFilename(filename)}]`;
+    });
+}
+
+function datasetSegmentsForRow(row) {
+  const stickers = inferRowStickers(row);
+  const text = `${row?.text ?? ''}`.trim();
+  if (isPureStickerText(text, stickers)) {
+    return stickers.map((item) => ({ kind: 'sticker', stickerId: item.id }));
+  }
+
+  const transformedText = transformTextForDataset(text, stickers);
+  if (!transformedText) return [];
+  return [{ kind: 'text', content: transformedText }];
 }
 
 function buildDatasetMessages(rows) {
@@ -516,21 +649,40 @@ function buildDatasetMessages(rows) {
 
   for (const row of rows) {
     const role = roleForSpeakerKey(row.speakerKey);
-    const text = transformTextForDataset(`${row.text ?? ''}`.trim());
-    if (!role || !text) continue;
+    const segments = datasetSegmentsForRow(row);
+    if (!role || !segments.length) continue;
 
     const previous = groups.at(-1);
-    if (previous && previous.role === role) {
-      previous.lines.push(text);
-      continue;
-    }
+    const group = previous && previous.role === role
+      ? previous
+      : (() => {
+          const nextGroup = { role, lines: [] };
+          groups.push(nextGroup);
+          return nextGroup;
+        })();
 
-    groups.push({ role, lines: [text] });
+    for (const segment of segments) {
+      if (segment.kind === 'sticker') {
+        const lastLine = group.lines.at(-1);
+        if (lastLine?.kind === 'sticker' && lastLine.stickerId === segment.stickerId) {
+          lastLine.count += 1;
+        } else {
+          group.lines.push({ kind: 'sticker', stickerId: segment.stickerId, count: 1 });
+        }
+        continue;
+      }
+
+      if (segment.content) {
+        group.lines.push({ kind: 'text', content: segment.content });
+      }
+    }
   }
 
   return groups.map((group) => ({
     role: group.role,
-    content: group.lines.join(' <MSG_SEP> '),
+    content: group.lines
+      .map((line) => (line.kind === 'sticker' ? `<sticker${line.stickerId},${line.count}times>` : line.content))
+      .join(' <MSG_SEP> '),
   }));
 }
 
@@ -589,6 +741,12 @@ function openReviewDialog({ editingAnnotation = null } = {}) {
         senderName: `${message?.senderName ?? ''}` || inferSpeakerName(message),
         senderUid: `${message?.senderUid ?? ''}`,
         senderUin: `${message?.senderUin ?? ''}`,
+        stickers: Array.isArray(message?.stickers)
+          ? message.stickers.map((sticker) => ({
+              id: Number(sticker?.id || sticker?.stickerId) || 0,
+              filename: normalizeStickerFilename(sticker?.filename),
+            }))
+          : inferRowStickers(message),
         speakerKey: inferStoredSpeakerKey(message),
         role: roleForSpeakerKey(inferStoredSpeakerKey(message)) || 'other',
         text: `${message?.text ?? ''}`,
@@ -607,6 +765,17 @@ function closeReviewDialog() {
   state.reviewRows = [];
   state.editingAnnotationId = null;
   els.reviewDialog.close();
+}
+
+function openSettingsDialog() {
+  renderStickerSummary();
+  renderSwapStates();
+  closeSidebar();
+  els.settingsDialog.showModal();
+}
+
+function closeSettingsDialog() {
+  els.settingsDialog.close();
 }
 
 function renderChatMeta() {
@@ -640,6 +809,28 @@ function renderChatMeta() {
     <div class="meta-pill">对方：昵称=${escapeHtml(identity.peer.nickname || identity.peer.displayName || '未识别')}</div>
     <div class="meta-pill">消息总数：${escapeHtml(totalMessages)}</div>
     ${pathBlock}
+  `;
+}
+
+function renderStickerSummary() {
+  if (!state.chat) {
+    els.stickerSummary.innerHTML = '载入聊天后会统计图片数量，并把下载和映射状态显示在这里。';
+    els.downloadStickers.disabled = true;
+    if (els.saveStickerHost) els.saveStickerHost.disabled = true;
+    if (els.stickerHostInput) els.stickerHostInput.value = '';
+    return;
+  }
+
+  const pack = stickerPack();
+  els.downloadStickers.disabled = false;
+  if (els.saveStickerHost) els.saveStickerHost.disabled = false;
+  if (els.stickerHostInput) els.stickerHostInput.value = pack.host || 'https://gchat.qpic.cn';
+  els.stickerSummary.innerHTML = `
+    <strong>共 ${pack.totalImages || 0} 条图片消息 / ${pack.uniqueStickers || 0} 个唯一表情包</strong>
+    <p class="annotation-preview">当前前缀：${escapeHtml(pack.host || 'https://gchat.qpic.cn')}</p>
+    <p class="annotation-preview">已下载 ${pack.downloadedCount || 0} 个，失败 ${pack.failedCount || 0} 个。</p>
+    <p class="annotation-preview">配置文件：${escapeHtml(state.chat.stickerConfigPath || '')}</p>
+    <p class="annotation-preview">下载目录：${escapeHtml(state.chat.stickerDir || '')}</p>
   `;
 }
 
@@ -843,6 +1034,7 @@ async function loadChat(fileId = '') {
 
     renderSelectedFileCard();
     renderChatMeta();
+    renderStickerSummary();
     renderSchemaNote();
     renderSelectionList();
     renderAnnotationSummary();
@@ -863,6 +1055,73 @@ async function loadChat(fileId = '') {
       hideLoading();
     }
     throw error;
+  }
+}
+
+async function refreshChatAfterStickerDownload() {
+  if (!state.currentFilePath && !state.currentFileId) return;
+  const query = state.currentFilePath
+    ? `path=${encodeURIComponent(state.currentFilePath)}`
+    : `file=${encodeURIComponent(state.currentFileId)}`;
+  const currentScrollTop = els.chatScroll.scrollTop;
+  const chat = await fetchJson(`/api/chat?${query}`);
+  state.chat = chat;
+  state.currentFileId = chat.fileId || state.currentFileId;
+  state.currentFilePath = chat.filePath || state.currentFilePath;
+  renderSelectedFileCard();
+  renderChatMeta();
+  renderStickerSummary();
+  renderSchemaNote();
+  initializeVirtualState();
+  renderVirtualWindow(true);
+  els.chatScroll.scrollTop = currentScrollTop;
+  scheduleVirtualRender(true);
+}
+
+async function saveStickerHostSetting() {
+  if (!state.currentFilePath && !state.currentFileId) {
+    alert('请先选择一个聊天文件。');
+    return;
+  }
+
+  const nextHost = els.stickerHostInput.value.trim();
+  const originalText = els.saveStickerHost.textContent;
+  els.saveStickerHost.disabled = true;
+  els.saveStickerHost.textContent = '保存中...';
+
+  try {
+    const result = await fetchJson('/api/stickers/settings', {
+      method: 'POST',
+      body: JSON.stringify({
+        fileId: state.currentFileId,
+        filePath: state.currentFilePath,
+        stickerHost: nextHost,
+      }),
+    });
+
+    if (state.chat) {
+      state.chat.stickerPack = result.stickerPack || state.chat.stickerPack;
+      state.chat.stickerConfigPath = result.stickerConfigPath || state.chat.stickerConfigPath;
+      const stickerItemMap = new Map((state.chat.stickerPack?.items || []).map((item) => [normalizeStickerFilename(item.filename), item]));
+      state.chat.messages = (state.chat.messages || []).map((message) => ({
+        ...message,
+        stickers: (message.stickers || []).map((sticker) => {
+          const updated = stickerItemMap.get(normalizeStickerFilename(sticker.filename));
+          return updated
+            ? { ...sticker, ...updated }
+            : sticker;
+        }),
+      }));
+    }
+
+    renderStickerSummary();
+    initializeVirtualState();
+    renderVirtualWindow(true);
+  } catch (error) {
+    alert(error instanceof Error ? error.message : String(error));
+  } finally {
+    els.saveStickerHost.disabled = false;
+    els.saveStickerHost.textContent = originalText;
   }
 }
 
@@ -893,6 +1152,7 @@ async function saveCurrentReview() {
     label: els.annotationLabel.value.trim(),
     selectedMessages: state.reviewRows.map((row) => ({
       ...row,
+      stickers: inferRowStickers(row),
       role: roleForSpeakerKey(row.speakerKey) || 'other',
     })),
     dataset,
@@ -1055,28 +1315,38 @@ function applyRoleMappingToAllAnnotations() {
 }
 
 async function confirmApplyRoleMapping() {
-  const changedCount = state.pendingMappingPreview.filter((item) => item.changed).length;
-  if (changedCount === 0) {
-    alert('当前映射与已保存标注一致，无需应用。');
+  try {
+    const changedCount = state.pendingMappingPreview.filter((item) => item.changed).length;
+    if (changedCount === 0) {
+      alert('当前映射与已保存标注一致，无需应用。');
+      closeMappingPreviewDialog();
+      return;
+    }
+
+    els.confirmApplyRoleMapping.disabled = true;
+    els.confirmApplyRoleMapping.textContent = '正在应用...';
+
+    const result = await fetchJson('/api/annotations/remap', {
+      method: 'POST',
+      body: JSON.stringify({
+        fileId: state.currentFileId,
+        filePath: state.currentFilePath,
+        roleSwap: state.roleSwap,
+      }),
+    });
+
+    state.annotations = result.annotations || [];
+    renderSelectionList();
+    renderAnnotationSummary();
+    renderAnnotationList();
+    refreshMessageDecorations();
     closeMappingPreviewDialog();
-    return;
+  } catch (error) {
+    alert(error instanceof Error ? error.message : String(error));
+  } finally {
+    els.confirmApplyRoleMapping.disabled = false;
+    els.confirmApplyRoleMapping.textContent = '确认应用到全部标注';
   }
-
-  const result = await fetchJson('/api/annotations/remap', {
-    method: 'POST',
-    body: JSON.stringify({
-      fileId: state.currentFileId,
-      filePath: state.currentFilePath,
-      roleSwap: state.roleSwap,
-    }),
-  });
-
-  state.annotations = result.annotations || [];
-  renderSelectionList();
-  renderAnnotationSummary();
-  renderAnnotationList();
-  refreshMessageDecorations();
-  closeMappingPreviewDialog();
 }
 
 function handleRoleSwapToggle() {
@@ -1101,8 +1371,11 @@ function bindEvents() {
 
   els.sidebarClose.addEventListener('click', closeSidebar);
   els.sidebarBackdrop.addEventListener('click', closeSidebar);
+  els.openSettings.addEventListener('click', openSettingsDialog);
+  els.closeSettingsDialog.addEventListener('click', closeSettingsDialog);
   els.toggleRoleSwap.addEventListener('click', handleRoleSwapToggle);
   els.applyRoleMapping.addEventListener('click', applyRoleMappingToAllAnnotations);
+  els.saveStickerHost.addEventListener('click', saveStickerHostSetting);
 
   els.pickFile.addEventListener('click', async () => {
     const result = await fetchJson('/api/select-file', { method: 'POST' });
@@ -1112,6 +1385,55 @@ function bindEvents() {
     state.currentFilePath = result.filePath || '';
     await loadChat('');
     closeSidebar();
+  });
+
+  els.downloadStickers.addEventListener('click', async () => {
+    if (!state.currentFilePath && !state.currentFileId) {
+      alert('请先选择一个聊天文件。');
+      return;
+    }
+
+    const originalText = els.downloadStickers.textContent;
+    els.downloadStickers.disabled = true;
+    els.downloadStickers.textContent = '下载中...';
+    setLoadingState({
+      visible: true,
+      percent: 12,
+      title: '正在下载表情包',
+      text: `准备下载 ${stickerPack().uniqueStickers || 0} 个表情包文件...`,
+    });
+
+    try {
+      const result = await fetchJson('/api/stickers/download', {
+        method: 'POST',
+        body: JSON.stringify({
+          fileId: state.currentFileId,
+          filePath: state.currentFilePath,
+        }),
+      });
+
+      setLoadingState({
+        visible: true,
+        percent: 78,
+        title: '正在刷新聊天记录',
+        text: `新下载 ${result.downloadedNow || 0} 个，跳过 ${result.skipped || 0} 个，失败 ${result.failed || 0} 个。`,
+      });
+      await refreshChatAfterStickerDownload();
+      setLoadingState({
+        visible: true,
+        percent: 100,
+        title: '表情包下载完成',
+        text: '图片状态已经刷新到聊天界面。',
+      });
+      await pauseForFrame();
+      hideLoading();
+    } catch (error) {
+      hideLoading();
+      alert(error instanceof Error ? error.message : String(error));
+    } finally {
+      els.downloadStickers.disabled = false;
+      els.downloadStickers.textContent = originalText;
+    }
   });
 
   els.clearSelection.addEventListener('click', () => {
@@ -1228,6 +1550,7 @@ async function init() {
   renderSwapStates();
   state.currentFilePath = localStorage.getItem('qq-annotator:last-file-path') || '';
   renderSelectedFileCard();
+  renderStickerSummary();
 
   if (state.currentFilePath) {
     await loadChat('');
