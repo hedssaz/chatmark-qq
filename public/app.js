@@ -38,10 +38,21 @@ const els = {
   openSettings: document.querySelector('#open-settings'),
   downloadStickers: document.querySelector('#download-stickers'),
   saveStickerHost: document.querySelector('#save-sticker-host'),
+  extractStickerRkey: document.querySelector('#extract-sticker-rkey'),
+  calculateStickerDownloads: document.querySelector('#calculate-sticker-downloads'),
+  stickerMinOccurrences: document.querySelector('#sticker-min-occurrences'),
   selectedFileCard: document.querySelector('#selected-file-card'),
   chatMeta: document.querySelector('#chat-meta'),
   stickerSummary: document.querySelector('#sticker-summary'),
   stickerHostInput: document.querySelector('#sticker-host-input'),
+  stickerSampleUrl: document.querySelector('#sticker-sample-url'),
+  stickerRkeyInput: document.querySelector('#sticker-rkey-input'),
+  stickerCandidateSummary: document.querySelector('#sticker-candidate-summary'),
+  stickerDownloadProgress: document.querySelector('#sticker-download-progress'),
+  stickerDownloadTitle: document.querySelector('#sticker-download-title'),
+  stickerDownloadCount: document.querySelector('#sticker-download-count'),
+  stickerDownloadFill: document.querySelector('#sticker-download-fill'),
+  stickerDownloadText: document.querySelector('#sticker-download-text'),
   toggleRoleSwap: document.querySelector('#toggle-role-swap'),
   applyRoleMapping: document.querySelector('#apply-role-mapping'),
   roleSwapState: document.querySelector('#role-swap-state'),
@@ -116,6 +127,52 @@ function stickerPack() {
 
 function stickerMap() {
   return new Map((stickerPack().items || []).map((item) => [normalizeStickerFilename(item.filename), item]));
+}
+
+function parsePositiveInteger(value, fallback = 1) {
+  const parsed = Number.parseInt(`${value ?? ''}`, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function extractRkey(value) {
+  const raw = `${value ?? ''}`.trim();
+  if (!raw) return '';
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      return new URL(raw).searchParams.get('rkey') || '';
+    } catch {
+      return '';
+    }
+  }
+  const match = raw.match(/(?:^|[?&])rkey=([^&#]+)/i);
+  if (match) {
+    try {
+      return decodeURIComponent(match[1]);
+    } catch {
+      return match[1];
+    }
+  }
+  return raw;
+}
+
+function parseSampleUrl(value) {
+  const raw = `${value ?? ''}`.trim();
+  if (!raw) return { host: '', rkey: '' };
+  try {
+    const url = new URL(raw);
+    return {
+      host: `${url.protocol}//${url.host}`,
+      rkey: url.searchParams.get('rkey') || '',
+    };
+  } catch {
+    return { host: '', rkey: extractRkey(raw) };
+  }
+}
+
+function currentStickerRkey() {
+  const direct = extractRkey(els.stickerRkeyInput?.value || '');
+  if (direct) return direct;
+  return parseSampleUrl(els.stickerSampleUrl?.value || '').rkey || '';
 }
 
 function inferRowStickers(row) {
@@ -282,7 +339,7 @@ function renderStickerGalleryHtml(stickers) {
             return `
               <figure class="msg-sticker-item">
                 <img class="msg-sticker-img" src="${escapeHtml(sticker.previewUrl)}" alt="${filename}" loading="lazy" />
-                <figcaption class="msg-sticker-caption">#${escapeHtml(sticker.id || '?')} · ${filename}</figcaption>
+                <figcaption class="msg-sticker-caption">图片/表情包#${escapeHtml(sticker.id || '?')} · ${filename}</figcaption>
               </figure>
             `;
           }
@@ -290,7 +347,7 @@ function renderStickerGalleryHtml(stickers) {
           const failed = sticker.downloadError ? ' failed' : '';
           return `
             <div class="msg-sticker-fallback${failed}">
-              <strong>#${escapeHtml(sticker.id || '?')}</strong>
+              <strong>图片/表情包#${escapeHtml(sticker.id || '?')}</strong>
               <span>${filename}</span>
             </div>
           `;
@@ -818,6 +875,9 @@ function renderStickerSummary() {
     els.downloadStickers.disabled = true;
     if (els.saveStickerHost) els.saveStickerHost.disabled = true;
     if (els.stickerHostInput) els.stickerHostInput.value = '';
+    if (els.stickerMinOccurrences) els.stickerMinOccurrences.value = '1';
+    if (els.stickerCandidateSummary) els.stickerCandidateSummary.textContent = '当前还没计算待下载数量。';
+    setStickerDownloadProgress({ visible: false });
     return;
   }
 
@@ -829,9 +889,28 @@ function renderStickerSummary() {
     <strong>共 ${pack.totalImages || 0} 条图片消息 / ${pack.uniqueStickers || 0} 个唯一表情包</strong>
     <p class="annotation-preview">当前前缀：${escapeHtml(pack.host || 'https://gchat.qpic.cn')}</p>
     <p class="annotation-preview">已下载 ${pack.downloadedCount || 0} 个，失败 ${pack.failedCount || 0} 个。</p>
+    <p class="annotation-preview">提示：需要先在 QQ 里自己发一个表情包，提取图链里的 rkey 再批量下载。</p>
     <p class="annotation-preview">配置文件：${escapeHtml(state.chat.stickerConfigPath || '')}</p>
     <p class="annotation-preview">下载目录：${escapeHtml(state.chat.stickerDir || '')}</p>
   `;
+}
+
+function setStickerDownloadProgress({ visible, current = 0, total = 0, success = 0, failed = 0, skipped = 0, text = '还没有开始下载。', title = '下载进度' }) {
+  els.stickerDownloadProgress.hidden = !visible;
+  els.stickerDownloadTitle.textContent = title;
+  els.stickerDownloadCount.textContent = `${current} / ${total}`;
+  const percent = total > 0 ? (current / total) * 100 : 0;
+  els.stickerDownloadFill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+  els.stickerDownloadText.textContent = `${text} 成功 ${success}，失败 ${failed}，跳过 ${skipped}。`;
+}
+
+function calculateStickerCandidates() {
+  const minOccurrences = parsePositiveInteger(els.stickerMinOccurrences?.value, 1);
+  const candidates = (stickerPack().items || []).filter((item) => Number(item.occurrences || 0) >= minOccurrences);
+  if (!els.stickerCandidateSummary) return candidates;
+
+  els.stickerCandidateSummary.textContent = `当前阈值会处理 ${candidates.length} 个表情包，阈值为至少出现 ${minOccurrences} 次。`;
+  return candidates;
 }
 
 function renderSchemaNote() {
@@ -1125,6 +1204,25 @@ async function saveStickerHostSetting() {
   }
 }
 
+function fillRkeyFromSampleUrl() {
+  const sample = els.stickerSampleUrl.value.trim();
+  if (!sample) {
+    alert('先贴一个可用图链再提取。');
+    return;
+  }
+
+  const { host, rkey } = parseSampleUrl(sample);
+  if (!rkey) {
+    alert('这条链接里没有解析到 rkey。');
+    return;
+  }
+
+  if (host && els.stickerHostInput) {
+    els.stickerHostInput.value = host;
+  }
+  els.stickerRkeyInput.value = rkey;
+}
+
 function toggleSelection(index) {
   const previousOrders = selectionOrderMap();
   const existingIndex = state.selectedMessageIndices.indexOf(index);
@@ -1375,7 +1473,14 @@ function bindEvents() {
   els.closeSettingsDialog.addEventListener('click', closeSettingsDialog);
   els.toggleRoleSwap.addEventListener('click', handleRoleSwapToggle);
   els.applyRoleMapping.addEventListener('click', applyRoleMappingToAllAnnotations);
+  els.extractStickerRkey.addEventListener('click', fillRkeyFromSampleUrl);
+  els.calculateStickerDownloads.addEventListener('click', calculateStickerCandidates);
   els.saveStickerHost.addEventListener('click', saveStickerHostSetting);
+  els.stickerMinOccurrences.addEventListener('input', () => {
+    if (els.stickerCandidateSummary) {
+      els.stickerCandidateSummary.textContent = '阈值已变更，点“计算待下载数量”查看本次会处理多少表情包。';
+    }
+  });
 
   els.pickFile.addEventListener('click', async () => {
     const result = await fetchJson('/api/select-file', { method: 'POST' });
@@ -1393,46 +1498,87 @@ function bindEvents() {
       return;
     }
 
+    const minOccurrences = parsePositiveInteger(els.stickerMinOccurrences?.value, 1);
+    const candidates = calculateStickerCandidates();
+    if (!candidates.length) {
+      alert(`当前没有出现至少 ${minOccurrences} 次的表情包。`);
+      return;
+    }
+
+    const transientRkey = currentStickerRkey();
+
     const originalText = els.downloadStickers.textContent;
     els.downloadStickers.disabled = true;
     els.downloadStickers.textContent = '下载中...';
-    setLoadingState({
+    els.saveStickerHost.disabled = true;
+    if (els.stickerMinOccurrences) els.stickerMinOccurrences.disabled = true;
+    setStickerDownloadProgress({
       visible: true,
-      percent: 12,
-      title: '正在下载表情包',
-      text: `准备下载 ${stickerPack().uniqueStickers || 0} 个表情包文件...`,
+      current: 0,
+      total: candidates.length,
+      success: 0,
+      failed: 0,
+      skipped: 0,
+      text: `准备下载出现至少 ${minOccurrences} 次的表情包`,
     });
 
     try {
-      const result = await fetchJson('/api/stickers/download', {
-        method: 'POST',
-        body: JSON.stringify({
-          fileId: state.currentFileId,
-          filePath: state.currentFilePath,
-        }),
-      });
+      let success = 0;
+      let failed = 0;
+      let skipped = 0;
+      let processed = 0;
+      let latestPack = state.chat?.stickerPack || stickerPack();
 
-      setLoadingState({
-        visible: true,
-        percent: 78,
-        title: '正在刷新聊天记录',
-        text: `新下载 ${result.downloadedNow || 0} 个，跳过 ${result.skipped || 0} 个，失败 ${result.failed || 0} 个。`,
-      });
+      for (const sticker of candidates) {
+        const result = await fetchJson('/api/stickers/download-one', {
+          method: 'POST',
+          body: JSON.stringify({
+            fileId: state.currentFileId,
+            filePath: state.currentFilePath,
+            stickerId: sticker.id,
+            stickerRkey: transientRkey,
+          }),
+        });
+
+        processed += 1;
+        latestPack = result.stickerPack || latestPack;
+        if (result.result?.status === 'downloaded') success += 1;
+        else if (result.result?.status === 'skipped') skipped += 1;
+        else failed += 1;
+
+        const label = sticker.filename || `#${sticker.id}`;
+        setStickerDownloadProgress({
+          visible: true,
+          current: processed,
+          total: candidates.length,
+          success,
+          failed,
+          skipped,
+          text: `正在处理 ${label}`,
+        });
+      }
+
+      if (state.chat) {
+        state.chat.stickerPack = latestPack;
+      }
       await refreshChatAfterStickerDownload();
-      setLoadingState({
+      setStickerDownloadProgress({
         visible: true,
-        percent: 100,
-        title: '表情包下载完成',
+        current: candidates.length,
+        total: candidates.length,
+        success,
+        failed,
+        skipped,
         text: '图片状态已经刷新到聊天界面。',
       });
       await pauseForFrame();
-      hideLoading();
     } catch (error) {
-      hideLoading();
       alert(error instanceof Error ? error.message : String(error));
     } finally {
       els.downloadStickers.disabled = false;
       els.downloadStickers.textContent = originalText;
+      els.saveStickerHost.disabled = false;
+      if (els.stickerMinOccurrences) els.stickerMinOccurrences.disabled = false;
     }
   });
 
@@ -1551,6 +1697,7 @@ async function init() {
   state.currentFilePath = localStorage.getItem('qq-annotator:last-file-path') || '';
   renderSelectedFileCard();
   renderStickerSummary();
+  setStickerDownloadProgress({ visible: false });
 
   if (state.currentFilePath) {
     await loadChat('');

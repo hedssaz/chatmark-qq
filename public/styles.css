@@ -298,6 +298,18 @@ textarea {
   margin-top: 14px;
 }
 
+.download-progress {
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.74);
+}
+
+.download-progress[hidden] {
+  display: none !important;
+}
+
 .meta-stack {
   display: flex;
   flex-wrap: wrap;

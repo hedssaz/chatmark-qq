@@ -45,6 +45,48 @@ function normalizeStickerFilename(value) {
   return path.basename(normalizeText(value));
 }
 
+function hasRkey(url) {
+  return /[?&]rkey=/i.test(`${url ?? ''}`);
+}
+
+function extractRkey(value) {
+  const raw = `${value ?? ''}`.trim();
+  if (!raw) return '';
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      return new URL(raw).searchParams.get('rkey') || '';
+    } catch {
+      return '';
+    }
+  }
+  const match = raw.match(/(?:^|[?&])rkey=([^&#]+)/i);
+  if (match) {
+    try {
+      return decodeURIComponent(match[1]);
+    } catch {
+      return match[1];
+    }
+  }
+  return raw;
+}
+
+function parseStickerSampleUrl(value) {
+  const raw = `${value ?? ''}`.trim();
+  if (!raw) return { stickerHost: '', stickerRkey: '' };
+  try {
+    const url = new URL(raw);
+    return {
+      stickerHost: `${url.protocol}//${url.host}`,
+      stickerRkey: url.searchParams.get('rkey') || '',
+    };
+  } catch {
+    return {
+      stickerHost: '',
+      stickerRkey: extractRkey(raw),
+    };
+  }
+}
+
 function normalizeStickerHost(value) {
   const raw = `${value ?? ''}`.trim();
   if (!raw) return DEFAULT_STICKER_HOST;
@@ -52,13 +94,22 @@ function normalizeStickerHost(value) {
   return withProtocol.replace(/\/+$/, '');
 }
 
-function resolveStickerRemoteUrl(value, stickerHost = DEFAULT_STICKER_HOST) {
+function resolveStickerRemoteUrl(value, stickerHost = DEFAULT_STICKER_HOST, stickerRkey = '') {
   const raw = `${value ?? ''}`.trim();
   if (!raw) return '';
-  if (/^https?:\/\//i.test(raw)) return raw;
+  const normalizedRkey = extractRkey(stickerRkey);
+  if (/^https?:\/\//i.test(raw)) {
+    if (!normalizedRkey || hasRkey(raw)) return raw;
+    const url = new URL(raw);
+    url.searchParams.set('rkey', normalizedRkey);
+    return url.toString();
+  }
   const host = normalizeStickerHost(stickerHost);
-  if (raw.startsWith('/')) return `${host}${raw}`;
-  return `${host}/${raw.replace(/^\/+/, '')}`;
+  const fullUrl = raw.startsWith('/') ? `${host}${raw}` : `${host}/${raw.replace(/^\/+/, '')}`;
+  if (!normalizedRkey || hasRkey(fullUrl)) return fullUrl;
+  const url = new URL(fullUrl);
+  url.searchParams.set('rkey', normalizedRkey);
+  return url.toString();
 }
 
 async function pathExists(targetPath) {
@@ -237,10 +288,10 @@ async function downloadStickerFile(sticker) {
   return { downloaded: true, error: '' };
 }
 
-async function updateStickerHost(chatFilePath, messages, nextHost) {
+async function updateStickerSettings(chatFilePath, messages, { nextHost = '' } = {}) {
   const derived = getDerivedPaths(chatFilePath);
   const config = await ensureStickerConfig(chatFilePath, messages);
-  const stickerHost = normalizeStickerHost(nextHost);
+  const stickerHost = normalizeStickerHost(nextHost || config.stickerHost || DEFAULT_STICKER_HOST);
   config.stickerHost = stickerHost;
   config.updatedAt = new Date().toISOString();
   config.stickers = (config.stickers || []).map((item) => ({
@@ -250,6 +301,13 @@ async function updateStickerHost(chatFilePath, messages, nextHost) {
   }));
   await fs.writeFile(derived.stickerConfigPath, JSON.stringify(config, null, 2), 'utf8');
   return config;
+}
+
+async function readOrCreateStickerConfig(chatFilePath) {
+  const raw = await fs.readFile(chatFilePath, 'utf8');
+  const chatData = JSON.parse(raw);
+  const config = await ensureStickerConfig(chatFilePath, Array.isArray(chatData?.messages) ? chatData.messages : []);
+  return { chatData, config };
 }
 
 async function ensureAnnotationStore(chatFilePath) {
@@ -950,6 +1008,56 @@ function createAppServer() {
         return;
       }
 
+      if (req.method === 'POST' && requestUrl.pathname === '/api/stickers/download-one') {
+        const body = await readRequestBody(req);
+        const fileId = typeof body?.fileId === 'string' ? body.fileId : '';
+        const filePath = typeof body?.filePath === 'string' ? body.filePath : '';
+        const stickerId = Number(body?.stickerId || 0);
+        const stickerRkey = typeof body?.stickerRkey === 'string' ? body.stickerRkey : '';
+        const fullPath = await resolveChatFile(fileId, filePath);
+        if (!fullPath) {
+          sendJson(res, 400, { error: '聊天记录文件无效。' });
+          return;
+        }
+        if (!stickerId) {
+          sendJson(res, 400, { error: '缺少 stickerId。' });
+          return;
+        }
+
+        const { config } = await readOrCreateStickerConfig(fullPath);
+        await fs.mkdir(getDerivedPaths(fullPath).stickerDir, { recursive: true });
+        const sticker = (config.stickers || []).find((item) => Number(item?.id) === stickerId);
+        if (!sticker) {
+          sendJson(res, 404, { error: '找不到对应的表情包。' });
+          return;
+        }
+
+        sticker.remoteUrl = resolveStickerRemoteUrl(sticker?.relativeUrl || sticker?.remoteUrl || '', config.stickerHost, stickerRkey);
+
+        if (await pathExists(sticker.localFile)) {
+          sticker.downloaded = true;
+          sticker.downloadError = '';
+          sticker.updatedAt = new Date().toISOString();
+          await fs.writeFile(getDerivedPaths(fullPath).stickerConfigPath, JSON.stringify(config, null, 2), 'utf8');
+          sendJson(res, 200, {
+            result: { status: 'skipped', stickerId },
+            stickerPack: summarizeStickerPack(config),
+          });
+          return;
+        }
+
+        const result = await downloadStickerFile(sticker);
+        sticker.downloaded = result.downloaded;
+        sticker.downloadError = result.error;
+        sticker.updatedAt = new Date().toISOString();
+        await fs.writeFile(getDerivedPaths(fullPath).stickerConfigPath, JSON.stringify(config, null, 2), 'utf8');
+        sendJson(res, 200, {
+          result: { status: result.downloaded ? 'downloaded' : 'failed', stickerId, error: result.error || '' },
+          stickerPack: summarizeStickerPack(config),
+        });
+        return;
+      }
+
       if (req.method === 'POST' && requestUrl.pathname === '/api/stickers/settings') {
         const body = await readRequestBody(req);
         const fileId = typeof body?.fileId === 'string' ? body.fileId : '';
@@ -963,7 +1071,9 @@ function createAppServer() {
 
         const raw = await fs.readFile(fullPath, 'utf8');
         const chatData = JSON.parse(raw);
-        const config = await updateStickerHost(fullPath, Array.isArray(chatData?.messages) ? chatData.messages : [], stickerHost);
+        const config = await updateStickerSettings(fullPath, Array.isArray(chatData?.messages) ? chatData.messages : [], {
+          nextHost: stickerHost,
+        });
         sendJson(res, 200, {
           stickerPack: summarizeStickerPack(config),
           stickerConfigPath: getDerivedPaths(fullPath).stickerConfigPath,

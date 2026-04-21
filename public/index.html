@@ -170,9 +170,34 @@
                 <span>表情包前缀</span>
                 <input id="sticker-host-input" type="text" placeholder="https://gchat.qpic.cn" />
               </label>
+              <label class="inline-input">
+                <span>可用图链</span>
+                <input id="sticker-sample-url" type="text" placeholder="把你自己发的表情包图链贴到这里，软件会提取 rkey" />
+              </label>
+              <label class="inline-input">
+                <span>rkey</span>
+                <input id="sticker-rkey-input" type="text" placeholder="默认留空；可直接填 rkey，也可先贴图链再提取" />
+              </label>
+              <label class="inline-input">
+                <span>只下载出现至少 N 次的表情包</span>
+                <input id="sticker-min-occurrences" type="number" min="1" step="1" value="1" />
+              </label>
               <div class="button-row compact-actions">
-                <button id="save-sticker-host" class="secondary-btn" type="button">保存前缀</button>
+                <button id="extract-sticker-rkey" class="ghost-btn" type="button">从链接提取 rkey</button>
+                <button id="calculate-sticker-downloads" class="ghost-btn" type="button">计算待下载数量</button>
+                <button id="save-sticker-host" class="secondary-btn" type="button">保存设置</button>
                 <button id="download-stickers" class="primary-btn" type="button">下载图片</button>
+              </div>
+              <div id="sticker-candidate-summary" class="muted inline-status">当前还没计算待下载数量。</div>
+              <div id="sticker-download-progress" class="download-progress" hidden>
+                <div class="loading-topline">
+                  <strong id="sticker-download-title">下载进度</strong>
+                  <span id="sticker-download-count">0 / 0</span>
+                </div>
+                <div class="loading-bar">
+                  <span id="sticker-download-fill" class="loading-bar-fill"></span>
+                </div>
+                <p id="sticker-download-text" class="loading-text">还没有开始下载。</p>
               </div>
               <div id="sticker-summary" class="placeholder-card">载入聊天后会统计图片数量，并把下载和映射状态显示在这里。</div>
             </section>
