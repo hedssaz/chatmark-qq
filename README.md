@@ -2,7 +2,7 @@
 
 A local-first annotation tool for QQ chat exports, designed for reviewing conversations and building datasets for LLM fine-tuning.
 
-[中文](./README.zh.md)
+English | [中文](./README.zh.md)
 
 ## Overview
 

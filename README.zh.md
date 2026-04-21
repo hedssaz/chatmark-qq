@@ -2,7 +2,7 @@
 
 一个本地优先的 QQ 聊天标注工具，适合浏览 `qq-chat-exporter` 导出的聊天 JSON，并整理成适用于 LLM 微调的数据集。
 
-[English](./README.md)
+[English](./README.md) | 中文
 
 ## 项目简介
 
