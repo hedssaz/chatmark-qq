@@ -7,9 +7,18 @@ const state = {
   chat: null,
   annotations: [],
   selectedMessageIndices: [],
+  selectionAnchorIndex: null,
   editingAnnotationId: null,
+  editingVariantIndex: null,
   reviewRows: [],
+  annotationSortMode: 'updated-desc',
+  exportFormat: 'messages-only',
+  exportSystemPrompt: '',
+  sidebarWidth: 360,
+  contextTraining: null,
   pendingMappingPreview: [],
+  sidebarWidth: 360,
+  sidebarDragActive: false,
   messageRowRefs: new Map(),
   messageOrderChipRefs: new Map(),
   messageCountChipRefs: new Map(),
@@ -31,6 +40,7 @@ const state = {
 const els = {
   appShell: document.querySelector('#app-shell'),
   sidebar: document.querySelector('#sidebar'),
+  sidebarResizer: document.querySelector('#sidebar-resizer'),
   sidebarToggle: document.querySelector('#sidebar-toggle'),
   sidebarClose: document.querySelector('#sidebar-close'),
   sidebarBackdrop: document.querySelector('#sidebar-backdrop'),
@@ -66,6 +76,9 @@ const els = {
   annotationEmpty: document.querySelector('#annotation-empty'),
   annotationList: document.querySelector('#annotation-list'),
   exportAnnotations: document.querySelector('#export-annotations'),
+  annotationSort: document.querySelector('#annotation-sort'),
+  exportFormat: document.querySelector('#export-format'),
+  exportSystemPrompt: document.querySelector('#export-system-prompt'),
   settingsDialog: document.querySelector('#settings-dialog'),
   closeSettingsDialog: document.querySelector('#close-settings-dialog'),
   mappingPreviewDialog: document.querySelector('#mapping-preview-dialog'),
@@ -90,7 +103,21 @@ const els = {
   reviewRows: document.querySelector('#review-rows'),
   jsonPreview: document.querySelector('#json-preview'),
   confirmSave: document.querySelector('#confirm-save'),
+  openContextTraining: document.querySelector('#open-context-training'),
   annotationLabel: document.querySelector('#annotation-label'),
+  contextTrainingDialog: document.querySelector('#context-training-dialog'),
+  closeContextTrainingDialog: document.querySelector('#close-context-training-dialog'),
+  contextDialogTitle: document.querySelector('#context-dialog-title'),
+  contextSelectionSummary: document.querySelector('#context-selection-summary'),
+  contextSourceRows: document.querySelector('#context-source-rows'),
+  contextAnnotationLabel: document.querySelector('#context-annotation-label'),
+  contextSelectAll: document.querySelector('#context-select-all'),
+  contextClearAll: document.querySelector('#context-clear-all'),
+  contextAddVariant: document.querySelector('#context-add-variant'),
+  contextReplaceVariant: document.querySelector('#context-replace-variant'),
+  contextVariantsEmpty: document.querySelector('#context-variants-empty'),
+  contextVariantsList: document.querySelector('#context-variants-list'),
+  contextSaveGroup: document.querySelector('#context-save-group'),
 };
 
 function escapeHtml(value) {
@@ -276,15 +303,90 @@ function selectionOrderMap() {
   return new Map(state.selectedMessageIndices.map((messageIndex, index) => [messageIndex, index + 1]));
 }
 
+function annotationVariants(annotation) {
+  if (Array.isArray(annotation?.variants) && annotation.variants.length) {
+    return annotation.variants;
+  }
+  return [{
+    id: annotation?.id || crypto.randomUUID(),
+    label: annotation?.label || '',
+    selectedMessages: Array.isArray(annotation?.selectedMessages) ? annotation.selectedMessages : [],
+    dataset: annotation?.dataset || { messages: [] },
+    locate: annotation?.locate || null,
+  }];
+}
+
+function messageIndicesForAnnotation(annotation, { countMode = false } = {}) {
+  const indices = new Set();
+  const sources = annotation?.kind === 'context-expansion'
+    ? annotationVariants(annotation).flatMap((variant) => variant.selectedMessages || [])
+    : (annotation?.selectedMessages || []);
+
+  for (const message of sources) {
+    const index = Number(message?.messageIndex ?? -1);
+    if (index >= 0) {
+      indices.add(index);
+    }
+  }
+
+  if (!countMode && annotation?.locate?.messageIndices?.length) {
+    for (const index of annotation.locate.messageIndices) {
+      if (Number.isFinite(index) && index >= 0) {
+        indices.add(index);
+      }
+    }
+  }
+
+  return [...indices].sort((a, b) => a - b);
+}
+
 function annotationCountMap() {
   const counts = new Map();
   for (const annotation of state.annotations) {
-    const seen = new Set(annotation.selectedMessages.map((item) => item.messageIndex));
+    const seen = new Set(messageIndicesForAnnotation(annotation, { countMode: true }));
     for (const messageIndex of seen) {
       counts.set(messageIndex, (counts.get(messageIndex) || 0) + 1);
     }
   }
   return counts;
+}
+
+function primaryVariantForAnnotation(annotation) {
+  return annotationVariants(annotation)[0] || {
+    selectedMessages: [],
+    dataset: { messages: [] },
+    locate: annotation?.locate || null,
+  };
+}
+
+function annotationLocateIndex(annotation) {
+  const locate = annotation?.locate || primaryVariantForAnnotation(annotation)?.locate || {};
+  const fromLocate = Number(locate?.firstMessageIndex ?? -1);
+  if (fromLocate >= 0) return fromLocate;
+  return messageIndicesForAnnotation(annotation)[0] ?? -1;
+}
+
+function firstSourceTimestamp(annotation) {
+  const first = primaryVariantForAnnotation(annotation)?.selectedMessages?.[0];
+  return Date.parse(first?.time || '') || 0;
+}
+
+function sortedAnnotations() {
+  const annotations = [...state.annotations];
+  const mode = state.annotationSortMode || 'updated-desc';
+  annotations.sort((a, b) => {
+    if (mode === 'updated-asc') {
+      return Date.parse(a.updatedAt || a.createdAt || 0) - Date.parse(b.updatedAt || b.createdAt || 0);
+    }
+    if (mode === 'source-asc') {
+      return firstSourceTimestamp(a) - firstSourceTimestamp(b);
+    }
+    if (mode === 'source-desc') {
+      return firstSourceTimestamp(b) - firstSourceTimestamp(a);
+    }
+    return Date.parse(b.updatedAt || b.createdAt || 0) - Date.parse(a.updatedAt || a.createdAt || 0);
+  });
+  return annotations;
 }
 
 function chatIdentity() {
@@ -744,14 +846,36 @@ function buildDatasetMessages(rows) {
 }
 
 function datasetForAnnotation(annotation) {
-  if (Array.isArray(annotation?.selectedMessages) && annotation.selectedMessages.length > 0) {
-    return { messages: buildDatasetMessages(annotation.selectedMessages) };
+  const primary = primaryVariantForAnnotation(annotation);
+  if (Array.isArray(primary?.selectedMessages) && primary.selectedMessages.length > 0) {
+    return { messages: buildDatasetMessages(primary.selectedMessages) };
   }
   return annotation?.dataset || { messages: [] };
 }
 
 function savedDatasetForAnnotation(annotation) {
-  return annotation?.dataset || { messages: [] };
+  return primaryVariantForAnnotation(annotation)?.dataset || annotation?.dataset || { messages: [] };
+}
+
+function exportableDatasetMessages(annotation) {
+  const dataset = datasetForAnnotation(annotation);
+  const messages = Array.isArray(dataset?.messages) ? dataset.messages.map((item) => ({ ...item })) : [];
+  const prompt = normalizeText(state.exportSystemPrompt);
+  if (state.exportFormat === 'messages-only' && prompt) {
+    return [{ role: 'system', content: prompt }, ...messages];
+  }
+  return messages;
+}
+
+function exportableAnnotation(annotation) {
+  if (state.exportFormat === 'messages-only') {
+    return { messages: exportableDatasetMessages(annotation) };
+  }
+
+  return {
+    ...annotation,
+    dataset: { messages: exportableDatasetMessages(annotation) },
+  };
 }
 
 function refreshJsonPreview() {
@@ -835,7 +959,7 @@ function closeSettingsDialog() {
   els.settingsDialog.close();
 }
 
-function renderChatMeta() {
+function overrideRenderChatMeta() {
   const chat = state.chat;
   if (!chat) {
     els.chatMeta.innerHTML = '';
@@ -953,7 +1077,7 @@ function annotationSummary(annotation) {
   return preview.length > 90 ? `${preview.slice(0, 90)}...` : preview;
 }
 
-function renderAnnotationSummary() {
+function overrideRenderAnnotationSummary() {
   if (!state.annotations.length) {
     els.annotationSummary.innerHTML = '当前文件还没有任何标注。';
     return;
@@ -966,7 +1090,7 @@ function renderAnnotationSummary() {
   `;
 }
 
-function renderAnnotationList() {
+function overrideRenderAnnotationList() {
   els.annotationEmpty.hidden = state.annotations.length > 0;
   els.annotationList.innerHTML = state.annotations
     .map((annotation) => {
@@ -981,7 +1105,6 @@ function renderAnnotationList() {
             <div class="annotation-chip">${annotation.selectedMessages.length} 条原消息</div>
           </div>
           <p class="annotation-preview">${escapeHtml(annotationSummary(annotation))}</p>
-          <pre class="annotation-json">${escapeHtml(JSON.stringify(dataset, null, 2))}</pre>
           <div class="annotation-actions">
             <button type="button" class="ghost-btn" data-action="locate-annotation" data-annotation-id="${annotation.id}">定位</button>
             <button type="button" class="ghost-btn" data-action="edit-annotation" data-annotation-id="${annotation.id}">编辑</button>
@@ -1012,7 +1135,7 @@ function refreshSelectionDecorations(previousOrders = new Map()) {
   }
 }
 
-function refreshMessageDecorations() {
+function overrideRefreshMessageDecorations() {
   const counts = annotationCountMap();
   const orders = selectionOrderMap();
 
@@ -1690,10 +1813,891 @@ function bindEvents() {
   els.annotationLabel.addEventListener('input', refreshJsonPreview);
 }
 
+function cloneReviewRow(row) {
+  return {
+    ...row,
+    stickers: Array.isArray(row?.stickers)
+      ? row.stickers.map((sticker) => ({
+          id: Number(sticker?.id || sticker?.stickerId) || 0,
+          filename: normalizeStickerFilename(sticker?.filename),
+        }))
+      : inferRowStickers(row),
+  };
+}
+
+function renderChatMeta() {
+  const chat = state.chat;
+  if (!chat) {
+    els.chatMeta.innerHTML = '';
+    return;
+  }
+
+  const identity = chatIdentity();
+  const totalMessages = chat.statistics?.totalMessages ?? chat.messages.length;
+  els.chatMeta.innerHTML = `
+    <div class="meta-pill">聊天对象备注：${escapeHtml(identity.peer.remark || '未命名')}</div>
+    <div class="meta-pill">聊天类型：${escapeHtml(chat.chatInfo?.type || 'unknown')}</div>
+    <div class="meta-pill">我：uid=${escapeHtml(identity.self.uid || '未识别')}</div>
+    <div class="meta-pill">我：qq=${escapeHtml(identity.self.uin || '未识别')}</div>
+    <div class="meta-pill">我：昵称=${escapeHtml(identity.self.name || '未识别')}</div>
+    <div class="meta-pill">对方：uid=${escapeHtml(identity.peer.uid || '未识别')}</div>
+    <div class="meta-pill">对方：qq=${escapeHtml(identity.peer.uin || '未识别')}</div>
+    <div class="meta-pill">对方：昵称=${escapeHtml(identity.peer.nickname || identity.peer.displayName || '未识别')}</div>
+    <div class="meta-pill">消息总数：${escapeHtml(totalMessages)}</div>
+    <details class="path-details">
+      <summary>文件路径</summary>
+      <div class="path-detail-list">
+        <div><strong>源文件：</strong>${escapeHtml(chat.filePath || '')}</div>
+        <div><strong>标注文件：</strong>${escapeHtml(chat.annotationPath || '')}</div>
+      </div>
+    </details>
+  `;
+}
+
+function renderAnnotationSummary() {
+  if (!state.annotations.length) {
+    els.annotationSummary.innerHTML = '当前文件还没有任何标注。';
+    return;
+  }
+
+  const latest = sortedAnnotations()[0];
+  els.annotationSummary.innerHTML = `
+    <strong>共 ${state.annotations.length} 条标注</strong>
+    <p class="annotation-preview">最近一条：${escapeHtml(annotationSummary(latest))}</p>
+  `;
+}
+
+function renderAnnotationList() {
+  els.annotationEmpty.hidden = state.annotations.length > 0;
+  els.annotationList.innerHTML = sortedAnnotations()
+    .map((annotation) => {
+      const primary = primaryVariantForAnnotation(annotation);
+      const locateIndex = annotationLocateIndex(annotation);
+      const variantCount = annotationVariants(annotation).length;
+      const tag = annotation.kind === 'context-expansion'
+        ? `拓展上下文训练 · ${variantCount} 个变体`
+        : `${primary.selectedMessages.length} 条原消息`;
+      return `
+        <article class="annotation-card" data-annotation-id="${annotation.id}">
+          <div class="annotation-card-header">
+            <div>
+              <strong>${escapeHtml(annotation.label || '未命名标注')}</strong>
+              <p class="muted">${new Date(annotation.updatedAt).toLocaleString('zh-CN')}</p>
+            </div>
+            <div class="annotation-chip">${escapeHtml(tag)}</div>
+          </div>
+          <p class="annotation-preview">${escapeHtml(annotationSummary(annotation))}</p>
+          <p class="muted">定位锚点：第 ${locateIndex >= 0 ? locateIndex + 1 : '?'} 条消息</p>
+          <div class="annotation-actions">
+            <button type="button" class="ghost-btn" data-action="locate-annotation" data-annotation-id="${annotation.id}">定位</button>
+            <button type="button" class="ghost-btn" data-action="edit-annotation" data-annotation-id="${annotation.id}">编辑</button>
+            <button type="button" class="ghost-btn danger" data-action="delete-annotation" data-annotation-id="${annotation.id}">删除</button>
+          </div>
+        </article>
+      `;
+    })
+    .join('');
+}
+
+function refreshMessageDecorations() {
+  const counts = annotationCountMap();
+  const orders = selectionOrderMap();
+
+  for (const [index, row] of state.messageRowRefs.entries()) {
+    const count = counts.get(index) || 0;
+    const order = orders.get(index) || 0;
+
+    row.classList.toggle('selected', order > 0);
+    for (let level = 1; level <= 4; level += 1) {
+      row.classList.toggle(`count-level-${level}`, Math.min(count, 4) === level);
+    }
+
+    const countChip = state.messageCountChipRefs.get(index);
+    if (countChip) {
+      countChip.textContent = `${count} 次`;
+      countChip.classList.toggle('has-count', count > 0);
+    }
+
+    const orderChip = state.messageOrderChipRefs.get(index);
+    if (orderChip) {
+      orderChip.textContent = order > 0 ? `#${order}` : '';
+    }
+  }
+}
+
+function overrideToggleSelection(index, options = {}) {
+  const previousOrders = selectionOrderMap();
+  const isShift = Boolean(options.shiftKey);
+
+  if (isShift && Number.isInteger(state.selectionAnchorIndex)) {
+    const start = Math.min(state.selectionAnchorIndex, index);
+    const end = Math.max(state.selectionAnchorIndex, index);
+    const next = new Set(state.selectedMessageIndices);
+    for (let cursor = start; cursor <= end; cursor += 1) {
+      next.add(cursor);
+    }
+    state.selectedMessageIndices = [...next].sort((a, b) => a - b);
+  } else {
+    const existingIndex = state.selectedMessageIndices.indexOf(index);
+    if (existingIndex >= 0) {
+      state.selectedMessageIndices.splice(existingIndex, 1);
+    } else {
+      state.selectedMessageIndices.push(index);
+      state.selectedMessageIndices.sort((a, b) => a - b);
+    }
+    state.selectionAnchorIndex = index;
+  }
+
+  refreshSelectionDecorations(previousOrders);
+  renderSelectionList();
+}
+
+function applySidebarWidth() {
+  const width = Math.max(280, Math.min(680, Number(state.sidebarWidth) || 360));
+  state.sidebarWidth = width;
+  document.documentElement.style.setProperty('--sidebar-width', `${width}px`);
+}
+
+function beginSidebarResize(event) {
+  if (isCompactLayout()) return;
+  event.preventDefault();
+  state.sidebarDragActive = true;
+  els.sidebarResizer?.classList.add('dragging');
+  document.body.style.cursor = 'col-resize';
+  document.body.style.userSelect = 'none';
+}
+
+function handleSidebarResize(event) {
+  if (!state.sidebarDragActive || isCompactLayout()) return;
+  const shellRect = els.appShell.getBoundingClientRect();
+  const nextWidth = event.clientX - shellRect.left;
+  state.sidebarWidth = Math.max(280, Math.min(680, nextWidth));
+  localStorage.setItem('qq-annotator:sidebar-width', `${state.sidebarWidth}`);
+  applySidebarWidth();
+}
+
+function endSidebarResize() {
+  if (!state.sidebarDragActive) return;
+  state.sidebarDragActive = false;
+  els.sidebarResizer?.classList.remove('dragging');
+  document.body.style.cursor = '';
+  document.body.style.userSelect = '';
+}
+
+function currentReviewPayload() {
+  const selectedMessages = state.reviewRows.map((row) => ({
+    ...cloneReviewRow(row),
+    role: roleForSpeakerKey(row.speakerKey) || 'other',
+  }));
+  return {
+    fileId: state.currentFileId,
+    filePath: state.currentFilePath,
+    label: els.annotationLabel.value.trim(),
+    kind: 'single',
+    selectedMessages,
+    dataset: { messages: buildDatasetMessages(selectedMessages) },
+  };
+}
+
+async function reloadAnnotationsFromServer() {
+  const query = state.currentFilePath
+    ? `path=${encodeURIComponent(state.currentFilePath)}`
+    : `file=${encodeURIComponent(state.currentFileId)}`;
+  const { annotations } = await fetchJson(`/api/annotations?${query}`);
+  state.annotations = annotations || [];
+  renderAnnotationSummary();
+  renderAnnotationList();
+  refreshMessageDecorations();
+}
+
+async function overrideSaveCurrentReview() {
+  const payload = currentReviewPayload();
+  if (!payload.dataset.messages.length) {
+    alert('当前标注没有有效内容，请至少保留一条非空消息。');
+    return;
+  }
+
+  const originalText = els.confirmSave.textContent;
+  els.confirmSave.disabled = true;
+  els.confirmSave.textContent = state.editingAnnotationId ? '正在保存...' : '正在提交...';
+
+  try {
+    if (state.editingAnnotationId) {
+      await fetchJson(`/api/annotations/${state.editingAnnotationId}`, {
+        method: 'PUT',
+        body: JSON.stringify(payload),
+      });
+    } else {
+      await fetchJson('/api/annotations', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      state.selectedMessageIndices = [];
+      state.selectionAnchorIndex = null;
+      renderSelectionList();
+    }
+
+    await reloadAnnotationsFromServer();
+    closeReviewDialog();
+  } catch (error) {
+    alert(error instanceof Error ? error.message : String(error));
+  } finally {
+    els.confirmSave.disabled = false;
+    els.confirmSave.textContent = originalText;
+  }
+}
+
+function scrollToAnnotation(annotation) {
+  const targetIndex = annotationLocateIndex(annotation);
+  if (targetIndex >= 0) {
+    scrollToMessage(targetIndex);
+  }
+}
+
+function overrideJumpToFarthestAnnotated() {
+  const candidates = [...annotationCountMap().keys()].sort((a, b) => b - a);
+  if (!candidates.length) {
+    alert('还没有已标注消息。');
+    return;
+  }
+  scrollToMessage(candidates[0]);
+}
+
+function overrideExportAnnotations() {
+  const payload = sortedAnnotations().map(exportableAnnotation);
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  const suffix = state.exportFormat === 'messages-only' ? 'messages' : 'full';
+  anchor.download = `${(state.currentFileId || 'annotations').replace(/[\\/]/g, '_')}.${suffix}.json`;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+function contextSourceRows() {
+  return state.contextTraining?.sourceRows || [];
+}
+
+function contextSelectedRowIndexes() {
+  return [...(state.contextTraining?.selectedRowIndexes || new Set())].sort((a, b) => a - b);
+}
+
+function contextSelectedRows() {
+  const sourceRows = contextSourceRows();
+  return contextSelectedRowIndexes().map((index) => sourceRows[index]).filter(Boolean).map(cloneReviewRow);
+}
+
+function renderContextSelectionSummary() {
+  if (!state.contextTraining) return;
+  const count = contextSelectedRowIndexes().length;
+  els.contextSelectionSummary.innerHTML = `
+    <strong>当前选中 ${count} 条消息</strong>
+    <p class="annotation-preview">这些消息会被整理成一个训练变体；同一组里的多个变体只在计数里算 1 次。</p>
+  `;
+}
+
+function renderContextSourceRows() {
+  const rows = contextSourceRows();
+  if (!rows.length) {
+    els.contextSourceRows.innerHTML = '<div class="placeholder-card">还没有可拓展的内容。</div>';
+    renderContextSelectionSummary();
+    return;
+  }
+
+  const checked = state.contextTraining.selectedRowIndexes;
+  els.contextSourceRows.innerHTML = rows.map((row, index) => {
+    const role = roleBadgeText(row.speakerKey);
+    const enabled = checked.has(index);
+    return `
+      <article class="review-row context-row ${enabled ? 'context-row-selected' : ''}" data-context-index="${index}">
+        <label class="context-checkbox-line">
+          <input type="checkbox" data-action="toggle-context-row" data-context-index="${index}" ${enabled ? 'checked' : ''} />
+          <span class="review-badge ${role}">${role}</span>
+          <span class="muted">${escapeHtml(row.senderName)} · ${escapeHtml(row.time || '')}</span>
+        </label>
+        <div class="msg-content">${nl2br(row.text || '[空消息]')}</div>
+      </article>
+    `;
+  }).join('');
+  renderContextSelectionSummary();
+}
+
+function contextVariantPreview(variant) {
+  return (variant?.dataset?.messages || []).map((item) => item.content).join(' | ');
+}
+
+function moveExportButtonIntoAnnotationsDialog() {
+  if (!els.exportAnnotations || !els.annotationsDialog) return;
+  const dialogColumn = els.annotationsDialog.querySelector('.dialog-column');
+  const emptyState = els.annotationEmpty;
+  if (!dialogColumn || !emptyState) return;
+
+  let toolbar = els.annotationsDialog.querySelector('[data-role="annotation-export-toolbar"]');
+  if (!toolbar) {
+    toolbar = document.createElement('div');
+    toolbar.className = 'dialog-toolbar';
+    toolbar.dataset.role = 'annotation-export-toolbar';
+  }
+
+  if (els.exportAnnotations.parentElement !== toolbar) {
+    toolbar.appendChild(els.exportAnnotations);
+  }
+
+  if (toolbar.parentElement !== dialogColumn) {
+    dialogColumn.insertBefore(toolbar, emptyState);
+  }
+}
+
+function finalRenderAnnotationList() {
+  els.annotationEmpty.hidden = state.annotations.length > 0;
+  els.annotationList.innerHTML = sortedAnnotations()
+    .map((annotation) => {
+      const primary = primaryVariantForAnnotation(annotation);
+      const variantCount = annotationVariants(annotation).length;
+      const locateIndex = annotationLocateIndex(annotation);
+      const metaText = annotation.kind === 'context-expansion'
+        ? `拓展上下文训练 · ${variantCount} 个变体`
+        : `${primary.selectedMessages.length} 条原消息`;
+      return `
+        <article class="annotation-card" data-annotation-id="${annotation.id}">
+          <div class="annotation-card-header">
+            <div>
+              <strong>${escapeHtml(annotation.label || '未命名标注')}</strong>
+              <p class="muted">${new Date(annotation.updatedAt).toLocaleString('zh-CN')}</p>
+            </div>
+            <div class="annotation-chip">${escapeHtml(metaText)}</div>
+          </div>
+          <p class="annotation-preview">${escapeHtml(annotationSummary(annotation))}</p>
+          <p class="muted">定位锚点：第 ${locateIndex >= 0 ? locateIndex + 1 : '?'} 条消息</p>
+          <div class="annotation-actions">
+            <button type="button" class="ghost-btn" data-action="locate-annotation" data-annotation-id="${annotation.id}">定位</button>
+            <button type="button" class="ghost-btn" data-action="edit-annotation" data-annotation-id="${annotation.id}">编辑</button>
+            <button type="button" class="ghost-btn danger" data-action="delete-annotation" data-annotation-id="${annotation.id}">删除</button>
+          </div>
+        </article>
+      `;
+    })
+    .join('');
+}
+
+function renderContextVariantsList() {
+  const variants = state.contextTraining?.variants || [];
+  els.contextVariantsEmpty.hidden = variants.length > 0;
+  els.contextVariantsList.innerHTML = variants.map((variant, index) => {
+    const preview = contextVariantPreview(variant);
+    const active = state.contextTraining.activeVariantIndex === index;
+    return `
+      <article class="annotation-card ${active ? 'annotation-card-active' : ''}" data-context-variant-index="${index}">
+        <div class="annotation-card-header">
+          <div>
+            <strong>变体 ${index + 1}</strong>
+            <p class="muted">${variant.selectedMessages.length} 条原消息</p>
+          </div>
+          <div class="annotation-chip">${active ? '当前载入' : '已保存到组内'}</div>
+        </div>
+        <p class="annotation-preview">${escapeHtml(preview.length > 120 ? `${preview.slice(0, 120)}...` : preview || '[空变体]')}</p>
+        <div class="annotation-actions">
+          <button type="button" class="ghost-btn" data-action="load-context-variant" data-context-variant-index="${index}">载入</button>
+          <button type="button" class="ghost-btn" data-action="locate-context-variant" data-context-variant-index="${index}">定位</button>
+          <button type="button" class="ghost-btn danger" data-action="delete-context-variant" data-context-variant-index="${index}">删除</button>
+        </div>
+      </article>
+    `;
+  }).join('');
+}
+
+function buildContextVariantFromRows(rows) {
+  const selectedMessages = rows.map((row) => ({
+    ...cloneReviewRow(row),
+    role: roleForSpeakerKey(row.speakerKey) || 'other',
+  }));
+  return {
+    id: crypto.randomUUID(),
+    selectedMessages,
+    dataset: { messages: buildDatasetMessages(selectedMessages) },
+    locate: {
+      firstMessageIndex: selectedMessages[0]?.messageIndex ?? null,
+      messageIndices: selectedMessages.map((row) => row.messageIndex),
+    },
+  };
+}
+
+function loadContextVariantIntoSelection(index) {
+  const variant = state.contextTraining?.variants?.[index];
+  if (!variant) return;
+  const sourceRows = contextSourceRows();
+  const selectedIndexes = new Set();
+  const sourceIndexByMessageIndex = new Map(sourceRows.map((row, rowIndex) => [row.messageIndex, rowIndex]));
+  for (const message of variant.selectedMessages || []) {
+    const rowIndex = sourceIndexByMessageIndex.get(message.messageIndex);
+    if (Number.isInteger(rowIndex)) {
+      selectedIndexes.add(rowIndex);
+    }
+  }
+  state.contextTraining.selectedRowIndexes = selectedIndexes;
+  state.contextTraining.activeVariantIndex = index;
+  renderContextSourceRows();
+  renderContextVariantsList();
+}
+
+function openContextTrainingDialog({ annotation = null } = {}) {
+  const sourceRows = annotation
+    ? (Array.isArray(annotation.sourceMessages) && annotation.sourceMessages.length
+        ? annotation.sourceMessages
+        : primaryVariantForAnnotation(annotation).selectedMessages)
+      .map(cloneReviewRow)
+    : state.reviewRows.map(cloneReviewRow);
+
+  if (!sourceRows.length) {
+    alert('当前没有可用于拓展上下文训练的消息。');
+    return;
+  }
+
+  state.contextTraining = {
+    annotationId: annotation?.id || null,
+    sourceRows,
+    selectedRowIndexes: new Set(sourceRows.map((_, index) => index)),
+    activeVariantIndex: null,
+    variants: annotation
+      ? annotationVariants(annotation).map((variant) => ({
+          ...variant,
+          selectedMessages: (variant.selectedMessages || []).map(cloneReviewRow),
+        }))
+      : [],
+  };
+
+  els.contextDialogTitle.textContent = annotation ? '编辑拓展上下文训练' : '拓展上下文训练';
+  els.contextAnnotationLabel.value = annotation?.label || els.annotationLabel.value.trim() || '';
+  renderContextSourceRows();
+  renderContextVariantsList();
+  els.contextTrainingDialog.showModal();
+}
+
+function closeContextTrainingDialog() {
+  state.contextTraining = null;
+  els.contextTrainingDialog.close();
+}
+
+function addOrReplaceContextVariant({ replace = false } = {}) {
+  if (!state.contextTraining) return;
+  const rows = contextSelectedRows();
+  if (!rows.length) {
+    alert('请至少选中一条消息再生成变体。');
+    return;
+  }
+
+  const variant = buildContextVariantFromRows(rows);
+  const key = variant.selectedMessages.map((row) => row.messageIndex).join(',');
+  const existingIndex = state.contextTraining.variants.findIndex(
+    (item) => item.selectedMessages.map((row) => row.messageIndex).join(',') === key,
+  );
+
+  if (replace && Number.isInteger(state.contextTraining.activeVariantIndex) && state.contextTraining.activeVariantIndex >= 0) {
+    state.contextTraining.variants[state.contextTraining.activeVariantIndex] = {
+      ...state.contextTraining.variants[state.contextTraining.activeVariantIndex],
+      ...variant,
+    };
+  } else if (existingIndex >= 0) {
+    state.contextTraining.activeVariantIndex = existingIndex;
+    loadContextVariantIntoSelection(existingIndex);
+    alert('这个变体已经存在，我已经帮你定位到它。');
+    return;
+  } else {
+    state.contextTraining.variants.push(variant);
+    state.contextTraining.activeVariantIndex = state.contextTraining.variants.length - 1;
+  }
+
+  renderContextVariantsList();
+}
+
+async function saveContextTrainingGroup() {
+  if (!state.contextTraining) return;
+  const variants = state.contextTraining.variants || [];
+  if (!variants.length) {
+    alert('请先至少添加一个变体。');
+    return;
+  }
+
+  const payload = {
+    fileId: state.currentFileId,
+    filePath: state.currentFilePath,
+    label: els.contextAnnotationLabel.value.trim(),
+    kind: 'context-expansion',
+    sourceMessages: contextSourceRows().map(cloneReviewRow),
+    variants,
+  };
+
+  const originalText = els.contextSaveGroup.textContent;
+  els.contextSaveGroup.disabled = true;
+  els.contextSaveGroup.textContent = state.contextTraining.annotationId ? '正在保存...' : '正在创建...';
+
+  try {
+    if (state.contextTraining.annotationId) {
+      await fetchJson(`/api/annotations/${state.contextTraining.annotationId}`, {
+        method: 'PUT',
+        body: JSON.stringify(payload),
+      });
+    } else {
+      await fetchJson('/api/annotations', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      state.selectedMessageIndices = [];
+      state.selectionAnchorIndex = null;
+      renderSelectionList();
+    }
+
+    await reloadAnnotationsFromServer();
+    closeContextTrainingDialog();
+    if (els.reviewDialog.open && !state.contextTraining?.annotationId) {
+      closeReviewDialog();
+    }
+  } catch (error) {
+    alert(error instanceof Error ? error.message : String(error));
+  } finally {
+    els.contextSaveGroup.disabled = false;
+    els.contextSaveGroup.textContent = originalText;
+  }
+}
+
+function overrideBindEvents() {
+  els.sidebarToggle.addEventListener('click', () => {
+    if (isCompactLayout() && state.sidebarOpen) {
+      closeSidebar();
+      return;
+    }
+    openSidebar();
+  });
+
+  els.sidebarClose.addEventListener('click', closeSidebar);
+  els.sidebarBackdrop.addEventListener('click', closeSidebar);
+  els.openSettings.addEventListener('click', openSettingsDialog);
+  els.closeSettingsDialog.addEventListener('click', closeSettingsDialog);
+  els.toggleRoleSwap.addEventListener('click', handleRoleSwapToggle);
+  els.applyRoleMapping.addEventListener('click', applyRoleMappingToAllAnnotations);
+  els.extractStickerRkey.addEventListener('click', fillRkeyFromSampleUrl);
+  els.calculateStickerDownloads.addEventListener('click', calculateStickerCandidates);
+  els.saveStickerHost.addEventListener('click', saveStickerHostSetting);
+  els.stickerMinOccurrences.addEventListener('input', () => {
+    if (els.stickerCandidateSummary) {
+      els.stickerCandidateSummary.textContent = '阈值已变更，点“计算待下载数量”查看这次会处理多少表情包。';
+    }
+  });
+
+  els.sidebarResizer?.addEventListener('pointerdown', beginSidebarResize);
+  window.addEventListener('pointermove', handleSidebarResize);
+  window.addEventListener('pointerup', endSidebarResize);
+  window.addEventListener('pointercancel', endSidebarResize);
+
+  els.annotationSort?.addEventListener('change', (event) => {
+    state.annotationSortMode = event.target.value || 'updated-desc';
+    localStorage.setItem('qq-annotator:annotation-sort', state.annotationSortMode);
+    renderAnnotationList();
+    renderAnnotationSummary();
+  });
+
+  els.exportFormat?.addEventListener('change', (event) => {
+    state.exportFormat = event.target.value || 'messages-only';
+    localStorage.setItem('qq-annotator:export-format', state.exportFormat);
+  });
+
+  els.exportSystemPrompt?.addEventListener('input', (event) => {
+    state.exportSystemPrompt = event.target.value || '';
+    localStorage.setItem('qq-annotator:export-system-prompt', state.exportSystemPrompt);
+  });
+
+  els.pickFile.addEventListener('click', async () => {
+    const result = await fetchJson('/api/select-file', { method: 'POST' });
+    if (result.cancelled) return;
+
+    state.currentFileId = result.fileId || '';
+    state.currentFilePath = result.filePath || '';
+    await loadChat('');
+    closeSidebar();
+  });
+
+  els.downloadStickers.addEventListener('click', async () => {
+    if (!state.currentFilePath && !state.currentFileId) {
+      alert('请先选择一个聊天文件。');
+      return;
+    }
+
+    const minOccurrences = parsePositiveInteger(els.stickerMinOccurrences?.value, 1);
+    const candidates = calculateStickerCandidates();
+    if (!candidates.length) {
+      alert(`当前没有出现至少 ${minOccurrences} 次的表情包。`);
+      return;
+    }
+
+    const transientRkey = currentStickerRkey();
+    const originalText = els.downloadStickers.textContent;
+    els.downloadStickers.disabled = true;
+    els.downloadStickers.textContent = '下载中...';
+    els.saveStickerHost.disabled = true;
+    if (els.stickerMinOccurrences) els.stickerMinOccurrences.disabled = true;
+    setStickerDownloadProgress({
+      visible: true,
+      current: 0,
+      total: candidates.length,
+      success: 0,
+      failed: 0,
+      skipped: 0,
+      text: `准备下载出现至少 ${minOccurrences} 次的表情包`,
+    });
+
+    try {
+      let success = 0;
+      let failed = 0;
+      let skipped = 0;
+      let processed = 0;
+      let latestPack = state.chat?.stickerPack || stickerPack();
+
+      for (const sticker of candidates) {
+        const result = await fetchJson('/api/stickers/download-one', {
+          method: 'POST',
+          body: JSON.stringify({
+            fileId: state.currentFileId,
+            filePath: state.currentFilePath,
+            stickerId: sticker.id,
+            stickerRkey: transientRkey,
+          }),
+        });
+
+        processed += 1;
+        latestPack = result.stickerPack || latestPack;
+        if (result.result?.status === 'downloaded') success += 1;
+        else if (result.result?.status === 'skipped') skipped += 1;
+        else failed += 1;
+
+        setStickerDownloadProgress({
+          visible: true,
+          current: processed,
+          total: candidates.length,
+          success,
+          failed,
+          skipped,
+          text: `正在处理 ${sticker.filename || `图片/表情包#${sticker.id}`}`,
+        });
+      }
+
+      if (state.chat) {
+        state.chat.stickerPack = latestPack;
+      }
+      await refreshChatAfterStickerDownload();
+      setStickerDownloadProgress({
+        visible: true,
+        current: candidates.length,
+        total: candidates.length,
+        success,
+        failed,
+        skipped,
+        text: '图片状态已经刷新到聊天界面。',
+      });
+      await pauseForFrame();
+    } catch (error) {
+      alert(error instanceof Error ? error.message : String(error));
+    } finally {
+      els.downloadStickers.disabled = false;
+      els.downloadStickers.textContent = originalText;
+      els.saveStickerHost.disabled = false;
+      if (els.stickerMinOccurrences) els.stickerMinOccurrences.disabled = false;
+    }
+  });
+
+  els.clearSelection.addEventListener('click', () => {
+    const previousOrders = selectionOrderMap();
+    state.selectedMessageIndices = [];
+    state.selectionAnchorIndex = null;
+    refreshSelectionDecorations(previousOrders);
+    renderSelectionList();
+  });
+
+  els.reviewSelection.addEventListener('click', () => {
+    if (!state.chat || !state.selectedMessageIndices.length) {
+      alert('请先选中要提交的聊天记录。');
+      return;
+    }
+    openReviewDialog();
+  });
+
+  els.openContextTraining?.addEventListener('click', () => {
+    openContextTrainingDialog();
+  });
+
+  els.jumpEarliest.addEventListener('click', jumpToFarthestAnnotated);
+  els.exportAnnotations.addEventListener('click', exportAnnotations);
+  els.openAnnotations.addEventListener('click', () => {
+    els.annotationsDialog.showModal();
+  });
+  els.closeAnnotationsDialog.addEventListener('click', () => {
+    els.annotationsDialog.close();
+  });
+  els.closeMappingPreviewDialog.addEventListener('click', closeMappingPreviewDialog);
+  els.confirmApplyRoleMapping.addEventListener('click', confirmApplyRoleMapping);
+
+  els.chatScroll.addEventListener('scroll', () => {
+    scheduleVirtualRender();
+  });
+
+  window.addEventListener('resize', () => {
+    syncResponsiveLayout();
+    applySidebarWidth();
+  });
+
+  els.chatList.addEventListener('click', (event) => {
+    const target = event.target.closest('.msg-card');
+    if (!target) return;
+    toggleSelection(Number(target.dataset.index), { shiftKey: event.shiftKey });
+  });
+
+  els.annotationList.addEventListener('click', async (event) => {
+    const target = event.target.closest('button[data-action]');
+    if (!target) return;
+
+    const annotation = state.annotations.find((item) => item.id === target.dataset.annotationId);
+    if (!annotation) return;
+
+    if (target.dataset.action === 'locate-annotation') {
+      scrollToAnnotation(annotation);
+      return;
+    }
+
+    if (target.dataset.action === 'edit-annotation') {
+      if (annotation.kind === 'context-expansion') {
+        openContextTrainingDialog({ annotation });
+      } else {
+        openReviewDialog({ editingAnnotation: annotation });
+      }
+      return;
+    }
+
+    if (target.dataset.action === 'delete-annotation') {
+      if (!confirm('确定要删除这条标注吗？')) return;
+
+      const query = state.currentFilePath
+        ? `path=${encodeURIComponent(state.currentFilePath)}`
+        : `file=${encodeURIComponent(state.currentFileId)}`;
+
+      await fetchJson(`/api/annotations/${annotation.id}?${query}`, { method: 'DELETE' });
+      state.annotations = state.annotations.filter((item) => item.id !== annotation.id);
+      renderAnnotationSummary();
+      renderAnnotationList();
+      refreshMessageDecorations();
+    }
+  });
+
+  els.closeDialog.addEventListener('click', closeReviewDialog);
+
+  els.reviewRows.addEventListener('click', (event) => {
+    const target = event.target.closest('button[data-action]');
+    if (!target) return;
+
+    const index = Number(target.dataset.reviewIndex);
+    if (target.dataset.action === 'move-up' && index > 0) {
+      [state.reviewRows[index - 1], state.reviewRows[index]] = [state.reviewRows[index], state.reviewRows[index - 1]];
+    }
+    if (target.dataset.action === 'move-down' && index < state.reviewRows.length - 1) {
+      [state.reviewRows[index + 1], state.reviewRows[index]] = [state.reviewRows[index], state.reviewRows[index + 1]];
+    }
+    if (target.dataset.action === 'remove') {
+      state.reviewRows.splice(index, 1);
+    }
+
+    renderReviewRows();
+  });
+
+  els.reviewRows.addEventListener('input', (event) => {
+    const target = event.target.closest('textarea[data-action="edit-text"]');
+    if (!target) return;
+
+    const index = Number(target.dataset.reviewIndex);
+    state.reviewRows[index].text = target.value;
+    refreshJsonPreview();
+  });
+
+  els.confirmSave.addEventListener('click', saveCurrentReview);
+  els.annotationLabel.addEventListener('input', refreshJsonPreview);
+
+  els.closeContextTrainingDialog?.addEventListener('click', closeContextTrainingDialog);
+  els.contextSelectAll?.addEventListener('click', () => {
+    if (!state.contextTraining) return;
+    state.contextTraining.selectedRowIndexes = new Set(contextSourceRows().map((_, index) => index));
+    state.contextTraining.activeVariantIndex = null;
+    renderContextSourceRows();
+    renderContextVariantsList();
+  });
+  els.contextClearAll?.addEventListener('click', () => {
+    if (!state.contextTraining) return;
+    state.contextTraining.selectedRowIndexes = new Set();
+    state.contextTraining.activeVariantIndex = null;
+    renderContextSourceRows();
+    renderContextVariantsList();
+  });
+  els.contextAddVariant?.addEventListener('click', () => addOrReplaceContextVariant({ replace: false }));
+  els.contextReplaceVariant?.addEventListener('click', () => addOrReplaceContextVariant({ replace: true }));
+  els.contextSaveGroup?.addEventListener('click', saveContextTrainingGroup);
+
+  els.contextSourceRows?.addEventListener('change', (event) => {
+    const target = event.target.closest('input[data-action="toggle-context-row"]');
+    if (!target || !state.contextTraining) return;
+    const index = Number(target.dataset.contextIndex);
+    if (target.checked) state.contextTraining.selectedRowIndexes.add(index);
+    else state.contextTraining.selectedRowIndexes.delete(index);
+    state.contextTraining.activeVariantIndex = null;
+    renderContextSourceRows();
+    renderContextVariantsList();
+  });
+
+  els.contextVariantsList?.addEventListener('click', (event) => {
+    const target = event.target.closest('button[data-action]');
+    if (!target || !state.contextTraining) return;
+    const index = Number(target.dataset.contextVariantIndex);
+    if (target.dataset.action === 'load-context-variant') {
+      loadContextVariantIntoSelection(index);
+      return;
+    }
+    if (target.dataset.action === 'locate-context-variant') {
+      const variant = state.contextTraining.variants[index];
+      const firstIndex = variant?.locate?.firstMessageIndex ?? variant?.selectedMessages?.[0]?.messageIndex;
+      if (Number.isInteger(firstIndex) && firstIndex >= 0) {
+        closeContextTrainingDialog();
+        scrollToMessage(firstIndex);
+      }
+      return;
+    }
+    if (target.dataset.action === 'delete-context-variant') {
+      state.contextTraining.variants.splice(index, 1);
+      if (state.contextTraining.activeVariantIndex === index) {
+        state.contextTraining.activeVariantIndex = null;
+      }
+      renderContextVariantsList();
+    }
+  });
+}
+
 async function init() {
+  renderChatMeta = overrideRenderChatMeta;
+  renderAnnotationSummary = overrideRenderAnnotationSummary;
+  renderAnnotationList = finalRenderAnnotationList;
+  refreshMessageDecorations = overrideRefreshMessageDecorations;
+  toggleSelection = overrideToggleSelection;
+  saveCurrentReview = overrideSaveCurrentReview;
+  jumpToFarthestAnnotated = overrideJumpToFarthestAnnotated;
+  exportAnnotations = overrideExportAnnotations;
+  bindEvents = overrideBindEvents;
   bindEvents();
+  moveExportButtonIntoAnnotationsDialog();
+  state.sidebarWidth = Number(localStorage.getItem('qq-annotator:sidebar-width') || 360);
+  state.annotationSortMode = localStorage.getItem('qq-annotator:annotation-sort') || 'updated-desc';
+  state.exportFormat = localStorage.getItem('qq-annotator:export-format') || 'messages-only';
+  state.exportSystemPrompt = localStorage.getItem('qq-annotator:export-system-prompt') || '';
   syncResponsiveLayout();
   renderSwapStates();
+  applySidebarWidth();
+  if (els.annotationSort) els.annotationSort.value = state.annotationSortMode;
+  if (els.exportFormat) els.exportFormat.value = state.exportFormat;
+  if (els.exportSystemPrompt) els.exportSystemPrompt.value = state.exportSystemPrompt;
   state.currentFilePath = localStorage.getItem('qq-annotator:last-file-path') || '';
   renderSelectedFileCard();
   renderStickerSummary();

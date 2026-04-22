@@ -325,43 +325,18 @@ async function readAnnotations(chatFilePath) {
   const raw = await fs.readFile(annotationsPath, 'utf8');
   try {
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed.annotations) ? parsed : { annotations: [] };
+    return Array.isArray(parsed.annotations)
+      ? { annotations: parsed.annotations.map(normalizeStoredAnnotationRecord) }
+      : { annotations: [] };
   } catch {
     return { annotations: [] };
   }
 }
 
-function buildProgressPayload(chatFilePath, annotations) {
-  const messageCounts = {};
-  let farthestAnnotatedIndex = null;
-
-  for (const annotation of annotations) {
-    const seen = new Set();
-    for (const selectedMessage of annotation.selectedMessages || []) {
-      const messageIndex = Number(selectedMessage?.messageIndex ?? -1);
-      if (messageIndex < 0 || seen.has(messageIndex)) continue;
-      seen.add(messageIndex);
-      messageCounts[messageIndex] = (messageCounts[messageIndex] || 0) + 1;
-      if (farthestAnnotatedIndex === null || messageIndex > farthestAnnotatedIndex) {
-        farthestAnnotatedIndex = messageIndex;
-      }
-    }
-  }
-
-  return {
-    sourceFile: chatFilePath,
-    updatedAt: new Date().toISOString(),
-    totalAnnotations: annotations.length,
-    farthestAnnotatedIndex,
-    messageCounts,
-  };
-}
-
 async function writeAnnotations(chatFilePath, data) {
   await ensureAnnotationStore(chatFilePath);
-  const { annotationsPath, progressPath } = getDerivedPaths(chatFilePath);
+  const { annotationsPath } = getDerivedPaths(chatFilePath);
   await fs.writeFile(annotationsPath, JSON.stringify(data, null, 2), 'utf8');
-  await fs.writeFile(progressPath, JSON.stringify(buildProgressPayload(chatFilePath, data.annotations), null, 2), 'utf8');
 }
 
 async function listChatFiles() {
@@ -432,12 +407,13 @@ function isSafeJsonPath(filePath) {
 async function resolveChatFile(fileId, explicitPath = '') {
   if (explicitPath) {
     const normalized = path.resolve(explicitPath);
-    if (!isSafeJsonPath(normalized)) return null;
-    try {
-      const stat = await fs.stat(normalized);
-      return stat.isFile() ? normalized : null;
-    } catch {
-      return null;
+    if (isSafeJsonPath(normalized)) {
+      try {
+        const stat = await fs.stat(normalized);
+        if (stat.isFile()) return normalized;
+      } catch {
+        // Fall back to file id lookup below.
+      }
     }
   }
 
@@ -595,7 +571,6 @@ async function normalizeChatExport(chatData, fileId, fullPath) {
     fileId,
     filePath: fullPath,
     annotationPath: derivedPaths.annotationsPath,
-    progressPath: derivedPaths.progressPath,
     stickerConfigPath: derivedPaths.stickerConfigPath,
     stickerDir: derivedPaths.stickerDir,
     schema: {
@@ -836,8 +811,95 @@ function buildDatasetMessagesFromSelectedMessages(selectedMessages, identity, ro
   }));
 }
 
+function sanitizeSelectedMessage(message) {
+  return {
+    messageIndex: Number(message?.messageIndex ?? -1),
+    messageId: `${message?.messageId ?? ''}`,
+    senderName: `${message?.senderName ?? ''}`,
+    senderUid: `${message?.senderUid ?? ''}`,
+    senderUin: `${message?.senderUin ?? ''}`,
+    stickers: (Array.isArray(message?.stickers) ? message.stickers : []).map((sticker) => ({
+      id: Number(sticker?.id || sticker?.stickerId) || 0,
+      filename: normalizeStickerFilename(sticker?.filename),
+    })),
+    speakerKey: ['self', 'peer', 'system', 'other'].includes(message?.speakerKey) ? message.speakerKey : 'other',
+    role: normalizeSavedRole(message?.role),
+    text: `${message?.text ?? ''}`,
+    time: `${message?.time ?? ''}`,
+    isSelf: Boolean(message?.isSelf),
+  };
+}
+
+function sanitizeDatasetMessages(datasetMessages) {
+  return (Array.isArray(datasetMessages) ? datasetMessages : []).map((message) => ({
+    role: message?.role === 'assistant' ? 'assistant' : message?.role === 'system' ? 'system' : 'user',
+    content: `${message?.content ?? ''}`,
+  }));
+}
+
+function buildLocatePayload(selectedMessages) {
+  const indices = [...new Set(
+    (Array.isArray(selectedMessages) ? selectedMessages : [])
+      .map((message) => Number(message?.messageIndex ?? -1))
+      .filter((index) => index >= 0),
+  )].sort((a, b) => a - b);
+  const first = Array.isArray(selectedMessages) ? selectedMessages[0] || null : null;
+  const last = Array.isArray(selectedMessages) ? selectedMessages[selectedMessages.length - 1] || null : null;
+  return {
+    firstMessageIndex: indices[0] ?? null,
+    lastMessageIndex: indices.length ? indices[indices.length - 1] : null,
+    messageIndices: indices,
+    firstMessageId: `${first?.messageId ?? ''}`,
+    anchorTime: `${first?.time ?? ''}`,
+    tailTime: `${last?.time ?? ''}`,
+  };
+}
+
+function sanitizeAnnotationVariant(variant) {
+  const selectedMessages = (Array.isArray(variant?.selectedMessages) ? variant.selectedMessages : []).map(sanitizeSelectedMessage);
+  const datasetMessages = sanitizeDatasetMessages(variant?.dataset?.messages);
+  return {
+    id: typeof variant?.id === 'string' && variant.id ? variant.id : randomUUID(),
+    label: typeof variant?.label === 'string' ? variant.label : '',
+    selectedMessages,
+    dataset: { messages: datasetMessages },
+    locate: buildLocatePayload(selectedMessages),
+    createdAt: typeof variant?.createdAt === 'string' && variant.createdAt ? variant.createdAt : new Date().toISOString(),
+    updatedAt: typeof variant?.updatedAt === 'string' && variant.updatedAt ? variant.updatedAt : new Date().toISOString(),
+  };
+}
+
+function normalizeStoredAnnotationRecord(annotation) {
+  const selectedMessages = (Array.isArray(annotation?.selectedMessages) ? annotation.selectedMessages : []).map(sanitizeSelectedMessage);
+  const dataset = { messages: sanitizeDatasetMessages(annotation?.dataset?.messages) };
+  const variants = Array.isArray(annotation?.variants) && annotation.variants.length
+    ? annotation.variants.map(sanitizeAnnotationVariant)
+    : [sanitizeAnnotationVariant({ selectedMessages, dataset })];
+  const sourceMessages = (Array.isArray(annotation?.sourceMessages) ? annotation.sourceMessages : []).map(sanitizeSelectedMessage);
+  const primary = variants[0] || sanitizeAnnotationVariant({ selectedMessages, dataset });
+
+  return {
+    ...annotation,
+    id: typeof annotation?.id === 'string' && annotation.id ? annotation.id : randomUUID(),
+    kind: annotation?.kind === 'context-expansion' ? 'context-expansion' : 'single',
+    label: typeof annotation?.label === 'string' ? annotation.label : '',
+    selectedMessages: primary.selectedMessages,
+    dataset: primary.dataset,
+    sourceMessages: sourceMessages.length ? sourceMessages : primary.selectedMessages,
+    variants,
+    locate: annotation?.locate && typeof annotation.locate === 'object'
+      ? {
+          ...buildLocatePayload(primary.selectedMessages),
+          ...annotation.locate,
+        }
+      : buildLocatePayload(primary.selectedMessages),
+    createdAt: typeof annotation?.createdAt === 'string' && annotation.createdAt ? annotation.createdAt : new Date().toISOString(),
+    updatedAt: typeof annotation?.updatedAt === 'string' && annotation.updatedAt ? annotation.updatedAt : new Date().toISOString(),
+  };
+}
+
 function remapAnnotation(annotation, identity, roleSwap, stickerConfig) {
-  const selectedMessages = (annotation?.selectedMessages || []).map((message) => {
+  const remapMessages = (messages) => (messages || []).map((message) => {
     const speakerKey = normalizeStoredSpeakerKey(message, identity);
     return {
       ...message,
@@ -846,12 +908,27 @@ function remapAnnotation(annotation, identity, roleSwap, stickerConfig) {
     };
   });
 
+  const variants = (annotation?.variants || []).map((variant) => {
+    const selectedMessages = remapMessages(variant?.selectedMessages || []);
+    return {
+      ...variant,
+      selectedMessages,
+      dataset: {
+        messages: buildDatasetMessagesFromSelectedMessages(selectedMessages, identity, roleSwap, stickerConfig),
+      },
+      locate: buildLocatePayload(selectedMessages),
+      updatedAt: new Date().toISOString(),
+    };
+  });
+  const primary = variants[0] || sanitizeAnnotationVariant({ selectedMessages: [], dataset: { messages: [] } });
+
   return {
     ...annotation,
-    selectedMessages,
-    dataset: {
-      messages: buildDatasetMessagesFromSelectedMessages(selectedMessages, identity, roleSwap, stickerConfig),
-    },
+    selectedMessages: primary.selectedMessages,
+    dataset: primary.dataset,
+    sourceMessages: remapMessages(annotation?.sourceMessages || primary.selectedMessages),
+    variants,
+    locate: buildLocatePayload(primary.selectedMessages),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -864,36 +941,25 @@ function normalizeSavedRole(role) {
 function sanitizeAnnotationPayload(body) {
   const fileId = typeof body?.fileId === 'string' ? body.fileId : '';
   const filePath = typeof body?.filePath === 'string' ? body.filePath : '';
-  const selectedMessages = Array.isArray(body?.selectedMessages) ? body.selectedMessages : [];
-  const datasetMessages = Array.isArray(body?.dataset?.messages) ? body.dataset.messages : [];
+  const kind = body?.kind === 'context-expansion' ? 'context-expansion' : 'single';
+  const selectedMessages = (Array.isArray(body?.selectedMessages) ? body.selectedMessages : []).map(sanitizeSelectedMessage);
+  const dataset = { messages: sanitizeDatasetMessages(body?.dataset?.messages) };
+  const variants = Array.isArray(body?.variants) && body.variants.length
+    ? body.variants.map(sanitizeAnnotationVariant)
+    : [sanitizeAnnotationVariant({ selectedMessages, dataset })];
+  const primary = variants[0];
+  const sourceMessages = (Array.isArray(body?.sourceMessages) ? body.sourceMessages : []).map(sanitizeSelectedMessage);
 
-  return {
+  return normalizeStoredAnnotationRecord({
     fileId,
     filePath,
+    kind,
     label: typeof body?.label === 'string' ? body.label : '',
-    selectedMessages: selectedMessages.map((message) => ({
-      messageIndex: Number(message?.messageIndex ?? -1),
-      messageId: `${message?.messageId ?? ''}`,
-      senderName: `${message?.senderName ?? ''}`,
-      senderUid: `${message?.senderUid ?? ''}`,
-      senderUin: `${message?.senderUin ?? ''}`,
-      stickers: (Array.isArray(message?.stickers) ? message.stickers : []).map((sticker) => ({
-        id: Number(sticker?.id || sticker?.stickerId) || 0,
-        filename: normalizeStickerFilename(sticker?.filename),
-      })),
-      speakerKey: ['self', 'peer', 'system', 'other'].includes(message?.speakerKey) ? message.speakerKey : 'other',
-      role: normalizeSavedRole(message?.role),
-      text: `${message?.text ?? ''}`,
-      time: `${message?.time ?? ''}`,
-      isSelf: Boolean(message?.isSelf),
-    })),
-    dataset: {
-      messages: datasetMessages.map((message) => ({
-        role: message?.role === 'assistant' ? 'assistant' : 'user',
-        content: `${message?.content ?? ''}`,
-      })),
-    },
-  };
+    selectedMessages: primary?.selectedMessages || [],
+    dataset: primary?.dataset || { messages: [] },
+    sourceMessages: sourceMessages.length ? sourceMessages : primary?.selectedMessages || [],
+    variants,
+  });
 }
 
 function createAppServer() {

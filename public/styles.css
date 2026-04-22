@@ -13,6 +13,7 @@
   --qq-white: #ffffff;
   --accent: #c97d32;
   --shadow: 0 18px 55px rgba(81, 63, 46, 0.12);
+  --sidebar-width: 360px;
   font-family: "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
 }
 
@@ -45,7 +46,7 @@ input {
 
 .app-shell {
   display: grid;
-  grid-template-columns: 380px 1fr;
+  grid-template-columns: minmax(280px, var(--sidebar-width)) 12px 1fr;
   height: 100vh;
   overflow: hidden;
   position: relative;
@@ -64,6 +65,31 @@ input {
   overflow-x: hidden;
   align-items: stretch;
   z-index: 8;
+}
+
+.sidebar-resizer {
+  position: relative;
+  cursor: col-resize;
+  background: transparent;
+  z-index: 6;
+}
+
+.sidebar-resizer::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 4px;
+  height: calc(100% - 40px);
+  border-radius: 999px;
+  background: rgba(84, 61, 37, 0.14);
+  transition: background 0.16s ease, box-shadow 0.16s ease;
+}
+
+.sidebar-resizer:hover::before,
+.sidebar-resizer.dragging::before {
+  background: rgba(201, 125, 50, 0.56);
+  box-shadow: 0 0 0 6px rgba(201, 125, 50, 0.12);
 }
 
 .brand-row,
@@ -431,8 +457,12 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  max-height: 70vh;
-  overflow: auto;
+  max-height: none;
+  overflow: visible;
+}
+
+.annotation-list.compact {
+  max-height: 58vh;
 }
 
 .annotation-card {
@@ -440,6 +470,11 @@ textarea {
   border-radius: 18px;
   background: rgba(255, 255, 255, 0.78);
   border: 1px solid var(--line);
+}
+
+.annotation-card-active {
+  border-color: rgba(201, 125, 50, 0.55);
+  box-shadow: 0 0 0 2px rgba(201, 125, 50, 0.12);
 }
 
 .annotation-preview {
@@ -457,6 +492,20 @@ textarea {
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.dialog-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.dialog-toolbar.stacked {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
 }
 
 .chat-stage {
@@ -761,6 +810,32 @@ textarea {
   border: 1px solid var(--line);
 }
 
+.context-row {
+  cursor: pointer;
+}
+
+.context-row-selected {
+  border-color: rgba(201, 125, 50, 0.38);
+  background: rgba(255, 251, 244, 0.96);
+}
+
+.context-checkbox-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.context-selection-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.compact-inline {
+  max-width: 320px;
+}
+
 .review-row-header {
   display: flex;
   align-items: center;
@@ -793,7 +868,7 @@ textarea {
 
 @media (max-width: 1280px) {
   .app-shell {
-    grid-template-columns: 340px 1fr;
+    grid-template-columns: minmax(280px, var(--sidebar-width)) 12px 1fr;
   }
 
   .chat-scroll {
@@ -809,6 +884,10 @@ textarea {
   .app-shell {
     grid-template-columns: 1fr;
     height: 100vh;
+  }
+
+  .sidebar-resizer {
+    display: none;
   }
 
   .dialog-content {
@@ -857,6 +936,11 @@ textarea {
     flex-wrap: wrap;
   }
 
+  .dialog-toolbar.stacked {
+    grid-template-columns: 1fr;
+    justify-content: flex-start;
+  }
+
   .schema-note {
     justify-content: flex-start;
   }
@@ -875,7 +959,7 @@ textarea {
 
   .review-rows,
   .annotation-list {
-    max-height: 60vh;
+    max-height: none;
   }
 }
 

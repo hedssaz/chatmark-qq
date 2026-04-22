@@ -58,6 +58,14 @@
         </section>
       </aside>
 
+      <div
+        id="sidebar-resizer"
+        class="sidebar-resizer"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize sidebar"
+      ></div>
+
       <div id="sidebar-backdrop" class="sidebar-backdrop" hidden></div>
 
       <main class="chat-stage">
@@ -115,7 +123,7 @@
               <h3>生成的 JSON</h3>
               <label class="inline-input">
                 <span>标注名</span>
-                <input id="annotation-label" type="text" placeholder="例如：4月22日晚 / 一次长对话" />
+                <input id="annotation-label" type="text" placeholder="例如：某天晚上的长对话" />
               </label>
             </div>
             <pre id="json-preview" class="json-preview"></pre>
@@ -123,6 +131,7 @@
         </section>
 
         <footer class="dialog-footer">
+          <button id="open-context-training" class="secondary-btn" type="button">拓展上下文训练</button>
           <button id="confirm-save" class="primary-btn" type="button">确认提交</button>
         </footer>
       </form>
@@ -140,6 +149,28 @@
 
         <section class="dialog-content single-column">
           <div class="dialog-column">
+            <div class="dialog-toolbar stacked">
+              <label class="inline-input">
+                <span>管理排序</span>
+                <select id="annotation-sort">
+                  <option value="updated-desc">按标注时间（新到旧）</option>
+                  <option value="updated-asc">按标注时间（旧到新）</option>
+                  <option value="source-asc">按首句消息时间（旧到新）</option>
+                  <option value="source-desc">按首句消息时间（新到旧）</option>
+                </select>
+              </label>
+              <label class="inline-input">
+                <span>导出格式</span>
+                <select id="export-format">
+                  <option value="messages-only">仅导出 {"messages":[...]}</option>
+                  <option value="chatmark-full">当前完整格式</option>
+                </select>
+              </label>
+              <label class="inline-input">
+                <span>system 提示词（可选）</span>
+                <input id="export-system-prompt" type="text" placeholder="例如：你是一个专业翻译助手" />
+              </label>
+            </div>
             <div id="annotation-empty" class="placeholder-card">当前文件还没有任何标注。</div>
             <div id="annotation-list" class="annotation-list"></div>
           </div>
@@ -163,7 +194,7 @@
               <div class="panel-header compact">
                 <div>
                   <h3>表情包管理</h3>
-                  <p class="muted">修改图片下载前缀、查看统计并下载图片。默认前缀是 `https://gchat.qpic.cn`。</p>
+                  <p class="muted">修改图片下载前缀、统计表情包并下载图片。默认前缀是 `https://gchat.qpic.cn`。</p>
                 </div>
               </div>
               <label class="inline-input">
@@ -172,11 +203,11 @@
               </label>
               <label class="inline-input">
                 <span>可用图链</span>
-                <input id="sticker-sample-url" type="text" placeholder="把你自己发的表情包图链贴到这里，软件会提取 rkey" />
+                <input id="sticker-sample-url" type="text" placeholder="先在 QQ 里自己发一个表情包，再把可访问图链粘贴到这里" />
               </label>
               <label class="inline-input">
                 <span>rkey</span>
-                <input id="sticker-rkey-input" type="text" placeholder="默认留空；可直接填 rkey，也可先贴图链再提取" />
+                <input id="sticker-rkey-input" type="text" placeholder="默认留空；也可以直接填 rkey 或从图链里提取" />
               </label>
               <label class="inline-input">
                 <span>只下载出现至少 N 次的表情包</span>
@@ -239,6 +270,55 @@
             <div id="mapping-preview-list" class="mapping-preview-list"></div>
           </div>
         </section>
+      </form>
+    </dialog>
+
+    <dialog id="context-training-dialog" class="review-dialog">
+      <form method="dialog" class="dialog-shell">
+        <header class="dialog-header">
+          <div>
+            <p class="eyebrow">Context Expansion</p>
+            <h2 id="context-dialog-title">拓展上下文训练</h2>
+          </div>
+          <button id="close-context-training-dialog" class="ghost-btn" type="button">关闭</button>
+        </header>
+
+        <section class="dialog-content">
+          <div class="dialog-column">
+            <div class="panel-header compact">
+              <h3>源聊天记录</h3>
+              <div class="context-selection-actions">
+                <button id="context-select-all" class="ghost-btn" type="button">全选</button>
+                <button id="context-clear-all" class="ghost-btn" type="button">清空</button>
+              </div>
+            </div>
+            <div id="context-selection-summary" class="placeholder-card">还没有可拓展的内容。</div>
+            <div id="context-source-rows" class="review-rows"></div>
+          </div>
+
+          <div class="dialog-column">
+            <div class="panel-header compact">
+              <div>
+                <h3>拓展变体</h3>
+                <p class="muted">先添加完整版本，再逐步缩短上下文。</p>
+              </div>
+              <label class="inline-input compact-inline">
+                <span>标注名</span>
+                <input id="context-annotation-label" type="text" placeholder="整个拓展组共用的标注名" />
+              </label>
+            </div>
+            <div class="button-row compact-actions">
+              <button id="context-add-variant" class="secondary-btn" type="button">添加当前变体</button>
+              <button id="context-replace-variant" class="ghost-btn" type="button">覆盖选中变体</button>
+            </div>
+            <div id="context-variants-empty" class="placeholder-card">还没有添加任何变体。</div>
+            <div id="context-variants-list" class="annotation-list compact"></div>
+          </div>
+        </section>
+
+        <footer class="dialog-footer">
+          <button id="context-save-group" class="primary-btn" type="button">保存拓展上下文训练</button>
+        </footer>
       </form>
     </dialog>
 
