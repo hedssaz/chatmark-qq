@@ -430,7 +430,7 @@ function bubbleClassForMessage(message) {
   return 'system';
 }
 
-function renderStickerGalleryHtml(stickers) {
+function renderStickerGalleryHtmlLegacy(stickers) {
   if (!stickers.length) return '';
   return `
     <div class="msg-sticker-gallery">
@@ -459,19 +459,195 @@ function renderStickerGalleryHtml(stickers) {
   `;
 }
 
-function renderMessageBodyHtml(message) {
-  const stickers = Array.isArray(message?.stickers) ? message.stickers : [];
-  const pureSticker = isPureStickerText(message?.text, stickers);
-  const textHtml = !pureSticker && `${message?.text ?? ''}`.trim()
-    ? `<div class="msg-content">${nl2br(message.text)}</div>`
-    : '';
-  const stickerHtml = renderStickerGalleryHtml(stickers);
+function renderAudioFilesHtml(audioFiles) {
+  if (!audioFiles.length) return '';
+  return `
+    <div class="msg-audio-list">
+      ${audioFiles.map((audio, index) => {
+        const filename = escapeHtml(audio.filename || `语音 ${index + 1}`);
+        if (audio.previewUrl) {
+          return `
+            <div class="msg-audio-item">
+              <div class="msg-audio-label">${filename}</div>
+              <audio class="msg-audio-player" controls preload="none" src="${escapeHtml(audio.previewUrl)}"></audio>
+            </div>
+          `;
+        }
 
-  if (textHtml || stickerHtml) {
-    return `${textHtml}${stickerHtml}`;
+        return `
+          <div class="msg-audio-fallback">
+            <strong>语音</strong>
+            <span>${filename}</span>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function normalizedMessageElements(message) {
+  return Array.isArray(message?.elements) ? message.elements : [];
+}
+
+function messageTypeLabel(message) {
+  return normalizeText(message?.typeLabel) || normalizeText(message?.type) || '未知消息';
+}
+
+function stripReplyPrefix(text) {
+  return `${text ?? ''}`.replace(/^\[回复 [^\]]+\]\s*\n?/u, '').trim();
+}
+
+function displayTextForMessage(message, elements, stickers, audioFiles) {
+  let text = `${message?.text ?? ''}`.trim();
+  if (!text) return '';
+  if (message?.recalled && /^\[\d+\]$/u.test(text)) return '';
+  if (elements.some((element) => element?.type === 'reply')) {
+    text = stripReplyPrefix(text);
+  }
+  if (stickers.length && isPureStickerText(text, stickers)) return '';
+  if (audioFiles.length && /^\[语音[^\]]*\]$/u.test(text)) return '';
+  if (elements.some((element) => element?.type === 'file') && /^\[文件:[^\]]+\]$/u.test(text)) return '';
+  if (elements.some((element) => element?.type === 'video') && /^\[视频:[^\]]+\]$/u.test(text)) return '';
+  if ((message?.type === 'type_11' || elements.some((element) => element?.type === 'forward')) && /^\[合并转发:/u.test(text)) return '';
+  if ((message?.type === 'type_7' || elements.some((element) => element?.type === 'json')) && /^\[卡片消息:/u.test(text)) return '';
+  if (elements.some((element) => element?.type === 'market_face')) return '';
+  return text;
+}
+
+function renderMessageBadgesHtml(message) {
+  const badges = [];
+  if (message?.system) badges.push('<span class="msg-badge system">系统</span>');
+  if (message?.recalled) badges.push('<span class="msg-badge recalled">已撤回</span>');
+  if (message?.type && message.type !== 'type_1' && !message?.system) {
+    badges.push(`<span class="msg-badge type">${escapeHtml(messageTypeLabel(message))}</span>`);
+  }
+  if (!badges.length) return '';
+  return `<div class="msg-badges">${badges.join('')}</div>`;
+}
+
+function renderInfoBlockHtml(title, summary = '', tone = '') {
+  const titleHtml = escapeHtml(title || '消息');
+  const summaryHtml = normalizeText(summary)
+    ? `<div class="msg-info-summary">${nl2br(summary)}</div>`
+    : '';
+  return `
+    <div class="msg-info-block${tone ? ` ${tone}` : ''}">
+      <div class="msg-info-title">${titleHtml}</div>
+      ${summaryHtml}
+    </div>
+  `;
+}
+
+function renderReplyElementsHtml(elements) {
+  const replies = elements.filter((element) => element?.type === 'reply');
+  if (!replies.length) return '';
+  return replies
+    .map((element) => {
+      const sender = normalizeText(element?.data?.senderName) || '未知用户';
+      const content = normalizeText(element?.data?.content) || '[空消息]';
+      return `
+        <div class="msg-reply-block">
+          <div class="msg-reply-sender">回复 ${escapeHtml(sender)}</div>
+          <div class="msg-reply-content">${nl2br(content)}</div>
+        </div>
+      `;
+    })
+    .join('');
+}
+
+function renderMarketFaceHtml(elements) {
+  const items = elements.filter((element) => element?.type === 'market_face');
+  if (!items.length) return '';
+  return `
+    <div class="msg-inline-tags">
+      ${items.map((element) => `<span class="msg-inline-tag">${escapeHtml(element?.data?.name || '[商城表情]')}</span>`).join('')}
+    </div>
+  `;
+}
+
+function forwardSummaryFromText(text) {
+  const match = `${text ?? ''}`.match(/<summary[^>]*>([^<]+)<\/summary>/iu);
+  if (match?.[1]) return match[1].trim();
+  if (/^\[合并转发:/u.test(`${text ?? ''}`)) return '查看转发内容';
+  return '';
+}
+
+function cardTitleFromText(text) {
+  const match = `${text ?? ''}`.match(/^\[卡片消息:\s*([^\]]+)\]/u);
+  return match?.[1]?.trim() || '';
+}
+
+function renderStructuredElementsHtml(message, elements) {
+  const blocks = [];
+  for (const element of elements) {
+    const type = `${element?.type || ''}`;
+    const data = element?.data || {};
+    if (['text', 'image', 'audio', 'reply', 'market_face'].includes(type)) continue;
+    if (type === 'file') {
+      blocks.push(renderInfoBlockHtml('文件', data.filename || '未命名文件'));
+      continue;
+    }
+    if (type === 'video') {
+      blocks.push(renderInfoBlockHtml('视频', data.filename || '未命名视频'));
+      continue;
+    }
+    if (type === 'json') {
+      blocks.push(renderInfoBlockHtml(data.title || '卡片消息', data.description || data.summary || data.url || ''));
+      continue;
+    }
+    if (type === 'forward') {
+      blocks.push(renderInfoBlockHtml(data.title || '合并转发', data.summary || '查看转发内容'));
+      continue;
+    }
+    if (type === 'location') {
+      blocks.push(renderInfoBlockHtml(data.title || '位置分享', data.summary || data.name || data.address || ''));
+      continue;
+    }
+    if (type === 'system') {
+      const text = normalizeText(data.text || data.summary);
+      if (text) {
+        blocks.push(renderInfoBlockHtml('系统提示', text, 'system'));
+      }
+      continue;
+    }
+    const summary = normalizeText(data.summary || data.text);
+    if (summary) {
+      blocks.push(renderInfoBlockHtml(messageTypeLabel(message), summary));
+    }
   }
 
-  return '<div class="msg-content">[空消息]</div>';
+  if (!blocks.length) {
+    if (message?.type === 'type_7') {
+      blocks.push(renderInfoBlockHtml('卡片消息', cardTitleFromText(message?.text) || '卡片内容'));
+    } else if (message?.type === 'type_11') {
+      blocks.push(renderInfoBlockHtml('合并转发', forwardSummaryFromText(message?.text)));
+    } else if (message?.type === 'type_19' && !normalizeText(message?.text)) {
+      blocks.push(renderInfoBlockHtml('类型 19 消息', '导出器未提供可读内容'));
+    }
+  }
+
+  return blocks.join('');
+}
+
+function renderMessageBodyHtml(message) {
+  const stickers = Array.isArray(message?.stickers) ? message.stickers : [];
+  const audioFiles = Array.isArray(message?.audioFiles) ? message.audioFiles : [];
+  const elements = normalizedMessageElements(message);
+  const visibleText = displayTextForMessage(message, elements, stickers, audioFiles);
+  const textHtml = visibleText ? `<div class="msg-content">${nl2br(visibleText)}</div>` : '';
+  const badgesHtml = renderMessageBadgesHtml(message);
+  const recalledHtml = message?.recalled ? '<div class="msg-state-line recalled">这条消息已被撤回</div>' : '';
+  const replyHtml = renderReplyElementsHtml(elements);
+  const marketFaceHtml = renderMarketFaceHtml(elements);
+  const structuredHtml = renderStructuredElementsHtml(message, elements);
+  const stickerHtml = renderStickerGalleryHtml(stickers);
+  const audioHtml = renderAudioFilesHtml(audioFiles);
+
+  if (badgesHtml || recalledHtml || replyHtml || textHtml || marketFaceHtml || structuredHtml || stickerHtml || audioHtml) {
+    return `${badgesHtml}${recalledHtml}${replyHtml}${textHtml}${marketFaceHtml}${structuredHtml}${stickerHtml}${audioHtml}`;
+  }
+
+  return `<div class="msg-content">[${escapeHtml(messageTypeLabel(message))}]</div>`;
 }
 
 function estimateMessageHeight(message) {
@@ -479,10 +655,15 @@ function estimateMessageHeight(message) {
   const explicitLines = Math.max(1, text.split('\n').length);
   const wrappedLines = Math.max(explicitLines, Math.ceil(text.length / 26) || 1);
   const stickerCount = Array.isArray(message?.stickers) ? message.stickers.length : 0;
+  const audioCount = Array.isArray(message?.audioFiles) ? message.audioFiles.length : 0;
+  const extraElementCount = normalizedMessageElements(message).filter((element) => !['text', 'image', 'audio'].includes(element?.type)).length;
   const base = message.senderKey === 'other' || message.senderKey === 'system' ? 82 : 106;
   const extra = Math.min(320, Math.max(0, wrappedLines - 1) * 20);
   const stickerExtra = stickerCount > 0 ? Math.min(360, stickerCount * 156) : 0;
-  return base + extra + stickerExtra + ITEM_GAP;
+  const audioExtra = audioCount > 0 ? Math.min(220, audioCount * 88) : 0;
+  const elementExtra = extraElementCount > 0 ? Math.min(280, extraElementCount * 62) : 0;
+  const badgeExtra = (message?.recalled || message?.system || (message?.type && message.type !== 'type_1')) ? 26 : 0;
+  return base + extra + stickerExtra + audioExtra + elementExtra + badgeExtra + ITEM_GAP;
 }
 
 function initializeVirtualState() {
@@ -2674,6 +2855,31 @@ function overrideBindEvents() {
       renderContextVariantsList();
     }
   });
+}
+
+function renderStickerGalleryHtml(stickers) {
+  if (!stickers.length) return '';
+  return `
+    <div class="msg-sticker-gallery">
+      ${stickers
+        .map((sticker) => {
+          const filename = escapeHtml(sticker.filename || '未命名图片');
+          const label = `图片/表情包#${escapeHtml(sticker.id || '?')} · ${filename}`;
+          if (sticker.previewUrl) {
+            return `
+              <div class="msg-sticker-entry">
+                <img class="msg-sticker-img" src="${escapeHtml(sticker.previewUrl)}" alt="${filename}" loading="lazy" />
+                <div class="msg-sticker-caption">${label}</div>
+              </div>
+            `;
+          }
+
+          const failed = sticker.downloadError ? ' failed' : '';
+          return `<div class="msg-sticker-caption msg-sticker-text${failed}">${label}</div>`;
+        })
+        .join('')}
+    </div>
+  `;
 }
 
 async function init() {

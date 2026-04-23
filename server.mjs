@@ -16,6 +16,8 @@ const CHAT_DIR = path.resolve(__dirname, '..', 'chathistory');
 const execFileAsync = promisify(execFile);
 const DEFAULT_STICKER_HOST = 'https://gchat.qpic.cn';
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp']);
+const AUDIO_EXTENSIONS = new Set(['.amr', '.mp3', '.m4a', '.wav', '.ogg', '.aac', '.opus']);
+const MEDIA_EXTENSIONS = new Set([...IMAGE_EXTENSIONS, ...AUDIO_EXTENSIONS]);
 
 const MIME_TYPES = {
   '.css': 'text/css; charset=utf-8',
@@ -25,6 +27,13 @@ const MIME_TYPES = {
   '.jpg': 'image/jpeg',
   '.js': 'application/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
+  '.m4a': 'audio/mp4',
+  '.mp3': 'audio/mpeg',
+  '.amr': 'audio/amr',
+  '.aac': 'audio/aac',
+  '.wav': 'audio/wav',
+  '.ogg': 'audio/ogg',
+  '.opus': 'audio/ogg',
   '.png': 'image/png',
   '.svg': 'image/svg+xml',
   '.webp': 'image/webp',
@@ -43,6 +52,25 @@ function getDerivedPaths(chatFilePath) {
 
 function normalizeStickerFilename(value) {
   return path.basename(normalizeText(value));
+}
+
+function isLikelyLocalFilePath(value) {
+  const raw = `${value ?? ''}`.trim();
+  if (!raw) return false;
+  return /^[a-zA-Z]:[\\/]/.test(raw) || /^\\\\/.test(raw) || raw.startsWith('file:///');
+}
+
+function normalizeLocalFilePath(value) {
+  const raw = `${value ?? ''}`.trim();
+  if (!raw) return '';
+  if (raw.startsWith('file:///')) {
+    try {
+      return fileURLToPath(raw);
+    } catch {
+      return '';
+    }
+  }
+  return isLikelyLocalFilePath(raw) ? raw : '';
 }
 
 function hasRkey(url) {
@@ -126,12 +154,13 @@ function extractStickerEntriesFromMessage(message) {
   const seen = new Set();
   const pushEntry = (resource) => {
     const filename = normalizeStickerFilename(resource?.filename || resource?.data?.filename);
-    const remoteUrl = resolveStickerRemoteUrl(resource?.url || resource?.data?.url);
+    const rawUrl = `${resource?.url || resource?.data?.url || ''}`;
+    const remoteUrl = resolveStickerRemoteUrl(rawUrl);
     if (!filename || seen.has(filename)) return;
     seen.add(filename);
     entries.push({
       filename,
-      relativeUrl: `${resource?.url || resource?.data?.url || ''}`,
+      relativeUrl: rawUrl,
       remoteUrl,
       size: Number(resource?.size || resource?.data?.size || 0),
       width: Number(resource?.width || resource?.data?.width || 0),
@@ -183,6 +212,183 @@ function buildStickerCatalog(messages) {
     totalOccurrences,
     items,
   };
+}
+
+function extractAudioEntriesFromMessage(message) {
+  const entries = [];
+  const seen = new Set();
+  const pushEntry = (resource) => {
+    const filename = normalizeStickerFilename(resource?.filename || resource?.data?.filename);
+    const localFile = normalizeLocalFilePath(resource?.url || resource?.data?.url);
+    if (!filename || !localFile || seen.has(localFile)) return;
+    seen.add(localFile);
+    entries.push({
+      filename,
+      localFile,
+      size: Number(resource?.size || resource?.data?.size || 0),
+    });
+  };
+
+  for (const resource of message?.content?.resources || []) {
+    if (`${resource?.type ?? ''}` === 'audio') {
+      pushEntry(resource);
+    }
+  }
+
+  for (const element of message?.content?.elements || []) {
+    if (`${element?.type ?? ''}` === 'audio') {
+      pushEntry(element?.data || {});
+    }
+  }
+
+  return entries;
+}
+
+function sanitizeElementData(type, data) {
+  const source = data && typeof data === 'object' ? data : {};
+  switch (`${type || ''}`) {
+    case 'text':
+      return { text: `${source.text || ''}` };
+    case 'face':
+      return {
+        id: `${source.id || source.faceId || ''}`,
+        name: `${source.name || ''}`,
+      };
+    case 'market_face':
+      return {
+        id: `${source.id || ''}`,
+        name: `${source.name || ''}`,
+      };
+    case 'image':
+      return {
+        filename: `${source.filename || ''}`,
+        size: Number(source.size || 0),
+        width: Number(source.width || 0),
+        height: Number(source.height || 0),
+        url: `${source.url || ''}`,
+        localPath: normalizeLocalFilePath(source.localPath || source.url),
+      };
+    case 'audio':
+      return {
+        filename: `${source.filename || ''}`,
+        size: Number(source.size || 0),
+        duration: Number(source.duration || 0),
+        url: `${source.url || ''}`,
+        localPath: normalizeLocalFilePath(source.localPath || source.url),
+      };
+    case 'video':
+      return {
+        filename: `${source.filename || ''}`,
+        size: Number(source.size || 0),
+        duration: Number(source.duration || 0),
+        url: `${source.url || ''}`,
+        localPath: normalizeLocalFilePath(source.localPath || source.url),
+      };
+    case 'file':
+      return {
+        filename: `${source.filename || ''}`,
+        size: Number(source.size || 0),
+        url: `${source.url || ''}`,
+        localPath: normalizeLocalFilePath(source.localPath || source.url),
+      };
+    case 'reply':
+      return {
+        messageId: `${source.messageId || ''}`,
+        referencedMessageId: `${source.referencedMessageId || ''}`,
+        senderUin: `${source.senderUin || ''}`,
+        senderName: `${source.senderName || ''}`,
+        content: `${source.content || source.text || ''}`,
+        timestamp: source.timestamp ?? null,
+      };
+    case 'forward':
+      return {
+        title: `${source.title || ''}`,
+        summary: `${source.summary || source.content || ''}`,
+        resId: `${source.resId || ''}`,
+      };
+    case 'json':
+      return {
+        title: `${source.title || ''}`,
+        description: `${source.description || ''}`,
+        url: `${source.url || ''}`,
+        preview: `${source.preview || ''}`,
+        appName: `${source.appName || ''}`,
+        summary: `${source.summary || source.title || source.description || ''}`,
+      };
+    case 'location':
+      return {
+        title: `${source.title || ''}`,
+        summary: `${source.summary || ''}`,
+        name: `${source.name || ''}`,
+        address: `${source.address || ''}`,
+        lat: source.lat ?? source.latitude ?? '',
+        lng: source.lng ?? source.longitude ?? '',
+      };
+    case 'system':
+      return {
+        text: `${source.text || source.content || ''}`,
+        summary: `${source.summary || source.text || source.content || ''}`,
+        subType: Number(source.subType || 0),
+      };
+    case 'long_message':
+    case 'av_record':
+    case 'markdown':
+    case 'giphy':
+    case 'inline_keyboard':
+    case 'calendar':
+    case 'yolo_game_result':
+    case 'face_bubble':
+    case 'tofu_record':
+    case 'task_top_msg':
+    case 'recommended_msg':
+    case 'action_bar':
+      return {
+        summary: `${source.summary || source.text || source.content || source.msgTitle || source.msgSummary || ''}`,
+        text: `${source.text || ''}`,
+      };
+    default:
+      return {
+        text: `${source.text || ''}`,
+        summary: `${source.summary || source.text || source.content || ''}`,
+      };
+  }
+}
+
+function normalizeMessageElements(message) {
+  return (message?.content?.elements || [])
+    .map((element) => ({
+      type: `${element?.type || ''}`,
+      data: sanitizeElementData(element?.type, element?.data),
+    }))
+    .filter((element) => element.type);
+}
+
+function typeLabelForMessage(messageType, isSystem) {
+  if (isSystem) return '系统提示';
+  switch (`${messageType || ''}`) {
+    case 'type_1':
+      return '文本消息';
+    case 'type_3':
+      return '回复消息';
+    case 'type_6':
+      return '语音消息';
+    case 'type_7':
+      return '卡片消息';
+    case 'type_8':
+      return '文件消息';
+    case 'type_9':
+      return '视频消息';
+    case 'type_11':
+      return '合并转发';
+    case 'type_17':
+      return '特殊消息';
+    case 'type_19':
+      return '类型 19 消息';
+    case 'type_23':
+      return '类型 23 消息';
+    default:
+      return messageType ? `消息类型 ${messageType}` : '未知消息';
+  }
 }
 
 async function readStickerConfig(chatFilePath) {
@@ -267,7 +473,7 @@ function summarizeStickerPack(stickerConfig) {
       downloaded: Boolean(item?.downloaded),
       downloadError: `${item?.downloadError ?? ''}`,
       localFile: `${item?.localFile ?? ''}`,
-      previewUrl: item?.downloaded ? `/api/sticker-file?path=${encodeURIComponent(item.localFile)}` : '',
+      previewUrl: item?.downloaded ? `/api/local-media?path=${encodeURIComponent(item.localFile)}` : '',
     })),
   };
 }
@@ -284,6 +490,7 @@ async function downloadStickerFile(sticker) {
   }
 
   const arrayBuffer = await response.arrayBuffer();
+  await fs.mkdir(path.dirname(sticker.localFile), { recursive: true });
   await fs.writeFile(sticker.localFile, Buffer.from(arrayBuffer));
   return { downloaded: true, error: '' };
 }
@@ -529,6 +736,8 @@ async function normalizeChatExport(chatData, fileId, fullPath) {
     const senderUid = normalizeText(message?.sender?.uid);
     const senderUin = normalizeText(message?.sender?.uin);
     const senderKey = senderKeyForMessage(message, identity);
+    const normalizedElements = normalizeMessageElements(message);
+    const isSystem = Boolean(message?.system) || senderKey === 'system';
     const stickers = extractStickerEntriesFromMessage(message)
       .map((item) => {
         const mapped = stickerMap.get(item.filename);
@@ -545,6 +754,14 @@ async function normalizeChatExport(chatData, fileId, fullPath) {
           : null;
       })
       .filter(Boolean);
+    const audioFiles = extractAudioEntriesFromMessage(message)
+      .map((item) => ({
+        filename: item.filename,
+        localFile: item.localFile,
+        size: item.size,
+        previewUrl: item.localFile ? `/api/local-media?path=${encodeURIComponent(item.localFile)}` : '',
+      }))
+      .filter((item) => item.localFile);
 
     return {
       index,
@@ -553,8 +770,9 @@ async function normalizeChatExport(chatData, fileId, fullPath) {
       timestamp: Number(message?.timestamp ?? 0),
       time: normalizeText(message?.time),
       type: normalizeText(message?.type),
+      typeLabel: typeLabelForMessage(message?.type, isSystem),
       recalled: Boolean(message?.recalled),
-      system: Boolean(message?.system) || senderKey === 'system',
+      system: isSystem,
       senderKey,
       senderName: displayNameForSender(senderKey, message, identity),
       rawSenderName: normalizeText(message?.sender?.name),
@@ -563,7 +781,9 @@ async function normalizeChatExport(chatData, fileId, fullPath) {
       isSelf: senderKey === 'self',
       isPeer: senderKey === 'peer',
       text: `${message?.content?.text ?? ''}`,
+      elements: normalizedElements,
       stickers,
+      audioFiles,
     };
   });
 
@@ -580,7 +800,7 @@ async function normalizeChatExport(chatData, fileId, fullPath) {
         'plugins/qq-chat-exporter/lib/core/parser/SimpleMessageParser.ts',
       ],
       topLevelFields: ['metadata', 'chatInfo', 'statistics', 'messages'],
-      messageFields: ['id', 'seq', 'timestamp', 'time', 'sender', 'type', 'content', 'recalled', 'system'],
+      messageFields: ['id', 'seq', 'timestamp', 'time', 'sender', 'type', 'content', 'recalled', 'system', 'elements'],
     },
     chatInfo: {
       name: normalizeText(chatInfo?.name),
@@ -1003,10 +1223,10 @@ function createAppServer() {
         return;
       }
 
-      if (req.method === 'GET' && requestUrl.pathname === '/api/sticker-file') {
+      if (req.method === 'GET' && (requestUrl.pathname === '/api/local-media' || requestUrl.pathname === '/api/sticker-file')) {
         const targetPath = path.resolve(requestUrl.searchParams.get('path') || '');
-        if (!targetPath || !IMAGE_EXTENSIONS.has(path.extname(targetPath).toLowerCase())) {
-          sendText(res, 400, 'Invalid image path');
+        if (!targetPath || !MEDIA_EXTENSIONS.has(path.extname(targetPath).toLowerCase())) {
+          sendText(res, 400, 'Invalid media path');
           return;
         }
 
