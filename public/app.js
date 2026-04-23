@@ -2072,14 +2072,39 @@ function scrollToMessage(index, { behavior = 'smooth' } = {}) {
   flashMessageRow(index);
 }
 
+function scrollToMessageStable(index) {
+  if (!state.chat?.messages?.[index]) return;
+
+  const viewportHeight = els.chatScroll.clientHeight || 0;
+  const estimateTop = state.virtual.offsets[index] || 0;
+  const estimateHeight = state.virtual.heights[index] || estimateMessageHeight(state.chat.messages[index]);
+  const initialTop = Math.max(0, estimateTop - Math.max(24, (viewportHeight - estimateHeight) * 0.18));
+
+  renderVirtualWindow(true);
+  els.chatScroll.scrollTop = initialTop;
+  scheduleVirtualRender(true);
+
+  requestAnimationFrame(() => {
+    renderVirtualWindow(true);
+    const settledTop = state.virtual.offsets[index] || estimateTop;
+    const settledHeight = state.virtual.heights[index] || estimateHeight;
+    const finalTop = Math.max(0, settledTop - Math.max(24, (viewportHeight - settledHeight) * 0.18));
+    els.chatScroll.scrollTop = finalTop;
+    scheduleVirtualRender(true);
+    flashMessageRow(index);
+  });
+}
+
 function jumpToFarthestAnnotated() {
-  const counts = annotationCountMap();
-  const candidates = [...counts.keys()].sort((a, b) => b - a);
-  if (!candidates.length) {
-    alert('还没有已标注消息。');
+  const targetIndex = state.annotations
+    .map((annotation) => annotationLocateIndex(annotation))
+    .filter((index) => Number.isInteger(index) && index >= 0)
+    .sort((a, b) => b - a)[0];
+  if (!Number.isInteger(targetIndex) || targetIndex < 0) {
+    alert('\u8fd8\u6ca1\u6709\u5df2\u6807\u6ce8\u6d88\u606f\u3002');
     return;
   }
-  scrollToMessage(candidates[0]);
+  scrollToMessageStable(targetIndex);
 }
 
 function exportAnnotations() {
@@ -2736,12 +2761,15 @@ function scrollToAnnotation(annotation) {
 }
 
 function overrideJumpToFarthestAnnotated() {
-  const candidates = [...annotationCountMap().keys()].sort((a, b) => b - a);
-  if (!candidates.length) {
-    alert('还没有已标注消息。');
+  const targetIndex = state.annotations
+    .map((annotation) => annotationLocateIndex(annotation))
+    .filter((index) => Number.isInteger(index) && index >= 0)
+    .sort((a, b) => b - a)[0];
+  if (!Number.isInteger(targetIndex) || targetIndex < 0) {
+    alert('\u8fd8\u6ca1\u6709\u5df2\u6807\u6ce8\u6d88\u606f\u3002');
     return;
   }
-  scrollToMessage(candidates[0]);
+  scrollToMessageStable(targetIndex);
 }
 
 function overrideExportAnnotations() {
