@@ -15,6 +15,17 @@ const state = {
   exportFormat: 'messages-only',
   exportSystemPrompt: '',
   sidebarWidth: 360,
+  stickerDownloadStatus: {
+    visible: false,
+    current: 0,
+    total: 0,
+    success: 0,
+    failed: 0,
+    skipped: 0,
+    text: '还没有开始下载。',
+    title: '下载进度',
+  },
+  activeAudio: null,
   contextTraining: null,
   pendingMappingPreview: [],
   sidebarWidth: 360,
@@ -457,6 +468,7 @@ function renderStickerGalleryHtmlLegacy(stickers) {
         .join('')}
     </div>
   `;
+  setStickerDownloadProgress(state.stickerDownloadStatus);
 }
 
 function renderAudioFilesHtml(audioFiles) {
@@ -466,10 +478,20 @@ function renderAudioFilesHtml(audioFiles) {
       ${audioFiles.map((audio, index) => {
         const filename = escapeHtml(audio.filename || `语音 ${index + 1}`);
         if (audio.previewUrl) {
+          const duration = Number(audio.duration || 0);
           return `
             <div class="msg-audio-item">
               <div class="msg-audio-label">${filename}</div>
-              <audio class="msg-audio-player" controls preload="none" src="${escapeHtml(audio.previewUrl)}"></audio>
+              <div class="msg-audio-controls">
+                <button
+                  type="button"
+                  class="msg-audio-toggle"
+                  data-action="toggle-audio"
+                  data-audio-src="${escapeHtml(audio.previewUrl)}"
+                >播放</button>
+                <span class="msg-audio-meta">${duration > 0 ? `${duration} 秒` : '语音'}</span>
+              </div>
+              <audio class="msg-audio-player" preload="none" src="${escapeHtml(audio.previewUrl)}" hidden></audio>
             </div>
           `;
         }
@@ -483,6 +505,64 @@ function renderAudioFilesHtml(audioFiles) {
       }).join('')}
     </div>
   `;
+}
+
+function resetAudioToggle(button) {
+  if (!button) return;
+  button.textContent = '播放';
+  button.classList.remove('playing');
+}
+
+function stopActiveAudioPlayback() {
+  const active = state.activeAudio;
+  if (!active?.audio) return;
+  active.audio.pause();
+  active.audio.currentTime = 0;
+  resetAudioToggle(active.button);
+  state.activeAudio = null;
+}
+
+async function handleAudioToggle(button) {
+  const container = button?.closest('.msg-audio-item');
+  const audio = container?.querySelector('.msg-audio-player');
+  if (!audio) return;
+
+  if (state.activeAudio?.audio && state.activeAudio.audio !== audio) {
+    stopActiveAudioPlayback();
+  }
+
+  if (audio.paused) {
+    try {
+      await audio.play();
+      button.textContent = '暂停';
+      button.classList.add('playing');
+      state.activeAudio = { audio, button };
+      audio.onended = () => {
+        resetAudioToggle(button);
+        if (state.activeAudio?.audio === audio) {
+          state.activeAudio = null;
+        }
+      };
+      audio.onpause = () => {
+        if (!audio.ended) {
+          resetAudioToggle(button);
+          if (state.activeAudio?.audio === audio) {
+            state.activeAudio = null;
+          }
+        }
+      };
+    } catch (error) {
+      resetAudioToggle(button);
+      alert(error instanceof Error ? error.message : String(error));
+    }
+    return;
+  }
+
+  audio.pause();
+  resetAudioToggle(button);
+  if (state.activeAudio?.audio === audio) {
+    state.activeAudio = null;
+  }
 }
 
 function normalizedMessageElements(message) {
@@ -1201,7 +1281,8 @@ function renderStickerSummary() {
 }
 
 function setStickerDownloadProgress({ visible, current = 0, total = 0, success = 0, failed = 0, skipped = 0, text = '还没有开始下载。', title = '下载进度' }) {
-  els.stickerDownloadProgress.hidden = !visible;
+  state.stickerDownloadStatus = { visible: Boolean(visible), current, total, success, failed, skipped, text, title };
+  els.stickerDownloadProgress.hidden = !state.stickerDownloadStatus.visible;
   els.stickerDownloadTitle.textContent = title;
   els.stickerDownloadCount.textContent = `${current} / ${total}`;
   const percent = total > 0 ? (current / total) * 100 : 0;
@@ -1385,8 +1466,19 @@ async function loadChat(fileId = '') {
   state.activeLoadToken = loadToken;
 
   if (fileId) state.currentFileId = fileId;
+  stopActiveAudioPlayback();
   state.selectedMessageIndices = [];
   state.roleSwap = false;
+  state.stickerDownloadStatus = {
+    visible: false,
+    current: 0,
+    total: 0,
+    success: 0,
+    failed: 0,
+    skipped: 0,
+    text: '还没有开始下载。',
+    title: '下载进度',
+  };
   renderSwapStates();
 
   setLoadingState({
@@ -2727,6 +2819,11 @@ function overrideBindEvents() {
   });
 
   els.chatList.addEventListener('click', (event) => {
+    const audioToggle = event.target.closest('button[data-action="toggle-audio"]');
+    if (audioToggle) {
+      handleAudioToggle(audioToggle);
+      return;
+    }
     const target = event.target.closest('.msg-card');
     if (!target) return;
     toggleSelection(Number(target.dataset.index), { shiftKey: event.shiftKey });

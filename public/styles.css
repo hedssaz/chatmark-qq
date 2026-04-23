@@ -829,6 +829,34 @@ textarea {
   word-break: break-word;
 }
 
+.msg-audio-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.msg-audio-toggle {
+  min-width: 72px;
+  border: 1px solid rgba(84, 61, 37, 0.16);
+  border-radius: 999px;
+  padding: 8px 14px;
+  background: rgba(255, 255, 255, 0.9);
+  color: #4b3f35;
+  cursor: pointer;
+}
+
+.msg-audio-toggle.playing {
+  background: rgba(201, 125, 50, 0.14);
+  border-color: rgba(201, 125, 50, 0.36);
+  color: #8e5422;
+}
+
+.msg-audio-meta {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
 .msg-audio-player {
   width: 100%;
   max-width: 280px;

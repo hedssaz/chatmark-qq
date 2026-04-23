@@ -226,6 +226,7 @@ function extractAudioEntriesFromMessage(message) {
       filename,
       localFile,
       size: Number(resource?.size || resource?.data?.size || 0),
+      duration: Number(resource?.duration || resource?.data?.duration || 0),
     });
   };
 
@@ -759,6 +760,7 @@ async function normalizeChatExport(chatData, fileId, fullPath) {
         filename: item.filename,
         localFile: item.localFile,
         size: item.size,
+        duration: item.duration,
         previewUrl: item.localFile ? `/api/local-media?path=${encodeURIComponent(item.localFile)}` : '',
       }))
       .filter((item) => item.localFile);
