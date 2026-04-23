@@ -96,6 +96,9 @@
         <section id="chat-scroll" class="chat-scroll">
           <ol id="chat-list" class="chat-list"></ol>
         </section>
+        <div id="reply-return-bar" class="reply-return-bar" hidden>
+          <button id="reply-return-button" class="secondary-btn" type="button">返回原信息</button>
+        </div>
       </main>
     </div>
 
@@ -249,6 +252,23 @@
                 <button id="toggle-role-swap" class="secondary-btn" type="button">互换 User / Assistant</button>
                 <button id="apply-role-mapping" class="ghost-btn" type="button">将当前角色映射应用到全部标注</button>
               </div>
+            </section>
+
+            <section class="settings-card">
+              <div class="panel-header compact">
+                <div>
+                  <h3>聊天显示</h3>
+                  <p class="muted">控制回复跳转返回时间，以及我方消息是否固定使用绿色气泡。</p>
+                </div>
+              </div>
+              <label class="inline-input">
+                <span>回复返回按钮保留秒数</span>
+                <input id="reply-return-seconds" type="number" min="1" step="1" value="10" />
+              </label>
+              <label class="checkbox-row">
+                <input id="outgoing-fixed-green" type="checkbox" checked />
+                <span>我方消息固定绿色</span>
+              </label>
             </section>
           </div>
         </section>

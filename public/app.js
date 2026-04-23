@@ -36,6 +36,9 @@ const state = {
   activeLoadToken: null,
   sidebarOpen: false,
   roleSwap: false,
+  replyReturnSeconds: 10,
+  outgoingFixedGreen: true,
+  replyReturnState: null,
   virtual: {
     heights: [],
     offsets: [0],
@@ -80,6 +83,10 @@ const els = {
   toggleRoleSwap: document.querySelector('#toggle-role-swap'),
   applyRoleMapping: document.querySelector('#apply-role-mapping'),
   roleSwapState: document.querySelector('#role-swap-state'),
+  replyReturnBar: document.querySelector('#reply-return-bar'),
+  replyReturnButton: document.querySelector('#reply-return-button'),
+  replyReturnSeconds: document.querySelector('#reply-return-seconds'),
+  outgoingFixedGreen: document.querySelector('#outgoing-fixed-green'),
   clearSelection: document.querySelector('#clear-selection'),
   reviewSelection: document.querySelector('#review-selection'),
   jumpEarliest: document.querySelector('#jump-earliest'),
@@ -240,6 +247,14 @@ function currentStickerRkey() {
   const direct = extractRkey(els.stickerRkeyInput?.value || '');
   if (direct) return direct;
   return parseSampleUrl(els.stickerSampleUrl?.value || '').rkey || '';
+}
+
+function replyReturnDurationMs() {
+  return parsePositiveInteger(els.replyReturnSeconds?.value, state.replyReturnSeconds || 10) * 1000;
+}
+
+function applyOutgoingColorMode() {
+  els.appShell?.classList.toggle('outgoing-by-count', !state.outgoingFixedGreen);
 }
 
 function inferRowStickers(row) {
@@ -694,9 +709,16 @@ function renderReplyElementsHtml(elements) {
     .map((element) => {
       const sender = normalizeText(element?.data?.senderName) || '未知用户';
       const content = normalizeText(element?.data?.content) || '[空消息]';
+      const targetId = normalizeText(element?.data?.referencedMessageId || element?.data?.messageId);
+      const jumpButton = targetId
+        ? `<button type="button" class="reply-jump-btn" data-action="jump-reply" data-reply-target="${escapeHtml(targetId)}" title="跳转到原消息">↗</button>`
+        : '';
       return `
         <div class="msg-reply-block">
-          <div class="msg-reply-sender">回复 ${escapeHtml(sender)}</div>
+          <div class="msg-reply-head">
+            <div class="msg-reply-sender">回复 ${escapeHtml(sender)}</div>
+            ${jumpButton}
+          </div>
           <div class="msg-reply-content">${nl2br(content)}</div>
         </div>
       `;
@@ -1608,6 +1630,7 @@ async function loadChat(fileId = '') {
 
   if (fileId) state.currentFileId = fileId;
   stopActiveAudioPlayback();
+  clearReplyReturnState();
   state.selectedMessageIndices = [];
   state.roleSwap = false;
   state.stickerDownloadStatus = {
@@ -1834,6 +1857,63 @@ function flashMessageRow(index, attempt = 0) {
   }
 }
 
+function messageIndexForReplyTarget(targetId) {
+  if (!state.chat?.messages?.length || !targetId) return -1;
+  const normalizedTarget = normalizeText(targetId);
+  return state.chat.messages.findIndex((message) => {
+    return normalizeText(message?.id) === normalizedTarget || normalizeText(message?.seq) === normalizedTarget;
+  });
+}
+
+function clearReplyReturnState() {
+  if (state.replyReturnState?.timerId) {
+    clearTimeout(state.replyReturnState.timerId);
+  }
+  state.replyReturnState = null;
+  if (els.replyReturnBar) els.replyReturnBar.hidden = true;
+}
+
+function showReplyReturnButton(sourceIndex) {
+  clearReplyReturnState();
+  const timeoutMs = replyReturnDurationMs();
+  const timerId = window.setTimeout(() => {
+    clearReplyReturnState();
+  }, timeoutMs);
+
+  state.replyReturnState = {
+    sourceIndex,
+    timerId,
+  };
+
+  if (els.replyReturnBar) els.replyReturnBar.hidden = false;
+}
+
+function jumpToReplyTarget(triggerButton) {
+  const targetId = normalizeText(triggerButton?.dataset?.replyTarget);
+  const sourceRow = triggerButton?.closest('.msg-row');
+  const sourceIndex = Number(sourceRow?.dataset?.index);
+  if (!targetId || !Number.isInteger(sourceIndex) || sourceIndex < 0) return;
+
+  const targetIndex = messageIndexForReplyTarget(targetId);
+  if (targetIndex < 0) {
+    alert('没有找到被回复的原消息。');
+    return;
+  }
+
+  showReplyReturnButton(sourceIndex);
+  scrollToMessage(targetIndex);
+}
+
+function returnToReplySource() {
+  const sourceIndex = Number(state.replyReturnState?.sourceIndex);
+  if (!Number.isInteger(sourceIndex) || sourceIndex < 0) {
+    clearReplyReturnState();
+    return;
+  }
+  clearReplyReturnState();
+  scrollToMessage(sourceIndex);
+}
+
 function scrollToMessage(index) {
   if (!state.chat?.messages?.[index]) return;
 
@@ -2012,9 +2092,20 @@ function bindEvents() {
   els.closeSettingsDialog.addEventListener('click', closeSettingsDialog);
   els.toggleRoleSwap.addEventListener('click', handleRoleSwapToggle);
   els.applyRoleMapping.addEventListener('click', applyRoleMappingToAllAnnotations);
+  els.replyReturnButton?.addEventListener('click', returnToReplySource);
   els.extractStickerRkey.addEventListener('click', fillRkeyFromSampleUrl);
   els.calculateStickerDownloads.addEventListener('click', calculateStickerCandidatesLatest);
   els.saveStickerHost.addEventListener('click', saveStickerHostSetting);
+  els.replyReturnSeconds?.addEventListener('input', (event) => {
+    state.replyReturnSeconds = parsePositiveInteger(event.target.value, 10);
+    localStorage.setItem('qq-annotator:reply-return-seconds', String(state.replyReturnSeconds));
+  });
+  els.outgoingFixedGreen?.addEventListener('change', (event) => {
+    state.outgoingFixedGreen = Boolean(event.target.checked);
+    localStorage.setItem('qq-annotator:outgoing-fixed-green', state.outgoingFixedGreen ? '1' : '0');
+    applyOutgoingColorMode();
+    refreshMessageDecorations();
+  });
   const handleStickerFilterInput = () => {
     if (els.stickerCandidateSummary) {
       els.stickerCandidateSummary.textContent = '筛选条件已变更，点“计算图片重复数量”查看这次会处理多少图片/表情包。';
@@ -2982,6 +3073,11 @@ function overrideBindEvents() {
   });
 
   els.chatList.addEventListener('click', (event) => {
+    const replyJump = event.target.closest('button[data-action="jump-reply"]');
+    if (replyJump) {
+      jumpToReplyTarget(replyJump);
+      return;
+    }
     const audioToggle = event.target.closest('button[data-action="toggle-audio"]');
     if (audioToggle) {
       handleAudioToggle(audioToggle);
@@ -3200,9 +3296,14 @@ async function init() {
   syncResponsiveLayout();
   renderSwapStates();
   applySidebarWidth();
+  state.replyReturnSeconds = parsePositiveInteger(localStorage.getItem('qq-annotator:reply-return-seconds') || '10', 10);
+  state.outgoingFixedGreen = localStorage.getItem('qq-annotator:outgoing-fixed-green') !== '0';
   if (els.annotationSort) els.annotationSort.value = state.annotationSortMode;
   if (els.exportFormat) els.exportFormat.value = state.exportFormat;
   if (els.exportSystemPrompt) els.exportSystemPrompt.value = state.exportSystemPrompt;
+  if (els.replyReturnSeconds) els.replyReturnSeconds.value = String(state.replyReturnSeconds);
+  if (els.outgoingFixedGreen) els.outgoingFixedGreen.checked = state.outgoingFixedGreen;
+  applyOutgoingColorMode();
   state.currentFilePath = localStorage.getItem('qq-annotator:last-file-path') || '';
   renderSelectedFileCard();
   renderStickerSummary();

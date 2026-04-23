@@ -544,6 +544,27 @@ textarea {
   border: 1px solid var(--line);
 }
 
+.reply-return-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 34px;
+  transform: translateX(-50%);
+  z-index: 3;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.reply-return-bar[hidden] {
+  display: none !important;
+}
+
+.reply-return-bar .secondary-btn {
+  pointer-events: auto;
+  box-shadow: 0 12px 24px rgba(81, 63, 46, 0.16);
+  background: rgba(255, 252, 247, 0.96);
+}
+
 .loading-overlay {
   position: absolute;
   inset: 92px 20px 20px;
@@ -650,6 +671,10 @@ textarea {
   background: var(--qq-green);
 }
 
+.app-shell.outgoing-by-count .msg-row.outgoing .msg-card {
+  background: var(--qq-white);
+}
+
 .msg-row.system .msg-card {
   background: rgba(255, 255, 255, 0.64);
   max-width: 560px;
@@ -749,6 +774,44 @@ textarea {
   font-size: 12px;
   font-weight: 700;
   color: #5a4a3e;
+}
+
+.msg-reply-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.reply-jump-btn {
+  width: 28px;
+  height: 28px;
+  border: 1px solid rgba(84, 61, 37, 0.16);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #5a4a3e;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.reply-jump-btn:hover {
+  background: rgba(201, 125, 50, 0.12);
+  border-color: rgba(201, 125, 50, 0.36);
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.checkbox-row input {
+  width: auto;
+  margin: 0;
 }
 
 .msg-reply-content,
