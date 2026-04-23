@@ -254,6 +254,20 @@ function replyReturnDurationMs() {
   return parsePositiveInteger(els.replyReturnSeconds?.value, state.replyReturnSeconds || 10) * 1000;
 }
 
+const COUNT_HIGHLIGHT_BACKGROUNDS = {
+  1: '#dff3cd',
+  2: '#c2e9a7',
+  3: '#a4de81',
+  4: '#95ec69',
+};
+
+const COUNT_HIGHLIGHT_TEXT = {
+  1: '#3f6a27',
+  2: '#345f1f',
+  3: '#234b14',
+  4: '#17330d',
+};
+
 function applyOutgoingColorMode() {
   els.appShell?.classList.toggle('outgoing-by-count', !state.outgoingFixedGreen);
   els.appShell?.classList.toggle('outgoing-fixed-green', state.outgoingFixedGreen);
@@ -935,6 +949,34 @@ function findIndexForOffset(offset) {
   return Math.min(heights.length - 1, low);
 }
 
+function messageCardBackground(message, count = 0) {
+  if (message?.senderKey === 'system' || message?.senderKey === 'other') {
+    return 'rgba(255, 255, 255, 0.64)';
+  }
+
+  if (message?.senderKey === 'self') {
+    if (state.outgoingFixedGreen) return 'var(--qq-green)';
+    return 'var(--qq-white)';
+  }
+
+  return 'var(--qq-white)';
+}
+
+function applyMessageCardVisual(row, message, count = 0) {
+  const card = row?.querySelector('.msg-card');
+  if (!card) return;
+  card.style.background = messageCardBackground(message, count);
+  card.style.borderColor = 'transparent';
+}
+
+function applyCountChipVisual(countChip, count = 0) {
+  if (!countChip) return;
+  const level = Math.max(0, Math.min(4, Number(count) || 0));
+  countChip.style.background = level > 0 ? COUNT_HIGHLIGHT_BACKGROUNDS[level] : '';
+  countChip.style.color = level > 0 ? COUNT_HIGHLIGHT_TEXT[level] : '';
+  countChip.style.borderColor = level > 0 ? 'transparent' : '';
+}
+
 function createMessageRow(message, count = 0, order = 0) {
   const row = document.createElement('li');
   row.className = `msg-row ${bubbleClassForMessage(message)}`;
@@ -964,6 +1006,8 @@ function createMessageRow(message, count = 0, order = 0) {
   countChip.dataset.countChip = `${message.index}`;
   countChip.textContent = `${count} 次`;
 
+  applyCountChipVisual(countChip, count);
+
   const orderChip = document.createElement('span');
   orderChip.className = 'order-chip';
   orderChip.dataset.orderChip = `${message.index}`;
@@ -971,6 +1015,7 @@ function createMessageRow(message, count = 0, order = 0) {
 
   side.append(countChip, orderChip);
   row.append(card, side);
+  applyMessageCardVisual(row, message, count);
 
   state.messageRowRefs.set(message.index, row);
   state.messageCountChipRefs.set(message.index, countChip);
@@ -1394,6 +1439,8 @@ function closeReviewDialog() {
 function openSettingsDialog() {
   renderStickerSummary();
   renderSwapStates();
+  if (els.replyReturnSeconds) els.replyReturnSeconds.value = String(state.replyReturnSeconds);
+  if (els.outgoingFixedGreen) els.outgoingFixedGreen.checked = state.outgoingFixedGreen;
   closeSidebar();
   els.settingsDialog.showModal();
 }
@@ -1590,16 +1637,24 @@ function overrideRefreshMessageDecorations() {
   for (const [index, row] of state.messageRowRefs.entries()) {
     const count = counts.get(index) || 0;
     const order = orders.get(index) || 0;
+    const message = state.chat?.messages?.[index];
 
     row.classList.toggle('selected', order > 0);
     for (let level = 1; level <= 4; level += 1) {
       row.classList.toggle(`count-level-${level}`, Math.min(count, 4) === level);
+    }
+    if (message) {
+      applyMessageCardVisual(row, message, count);
     }
 
     const countChip = state.messageCountChipRefs.get(index);
     if (countChip) {
       countChip.textContent = `${count} 次`;
       countChip.classList.toggle('has-count', count > 0);
+    }
+
+    if (countChip) {
+      applyCountChipVisual(countChip, count);
     }
 
     const orderChip = state.messageOrderChipRefs.get(index);

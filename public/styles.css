@@ -678,15 +678,6 @@ textarea {
 
 .app-shell.outgoing-by-count .msg-row.outgoing .msg-card {
   background: var(--qq-white) !important;
-  box-shadow: 0 10px 22px rgba(85, 68, 49, 0.08);
-}
-
-.app-shell.outgoing-fixed-green .msg-row.outgoing.count-level-1 .msg-card,
-.app-shell.outgoing-fixed-green .msg-row.outgoing.count-level-2 .msg-card,
-.app-shell.outgoing-fixed-green .msg-row.outgoing.count-level-3 .msg-card,
-.app-shell.outgoing-fixed-green .msg-row.outgoing.count-level-4 .msg-card {
-  background: var(--qq-green) !important;
-  box-shadow: 0 10px 22px rgba(85, 68, 49, 0.08);
 }
 
 .msg-row.system .msg-card {
@@ -974,27 +965,17 @@ textarea {
 
 .selected .msg-card {
   border-color: #d48a3f;
-  outline: 2px solid rgba(212, 138, 63, 0.18);
+  outline: 3px solid rgba(212, 138, 63, 0.34);
+  box-shadow:
+    0 0 0 6px rgba(212, 138, 63, 0.12),
+    0 16px 30px rgba(85, 68, 49, 0.16);
+  transform: translateY(-1px);
 }
 
-.count-level-1 .msg-card {
-  box-shadow: inset 0 0 0 999px var(--green-1), 0 10px 22px rgba(85, 68, 49, 0.08);
-}
-
-.count-level-2 .msg-card {
-  box-shadow: inset 0 0 0 999px var(--green-2), 0 10px 22px rgba(85, 68, 49, 0.08);
-}
-
-.count-level-3 .msg-card {
-  box-shadow: inset 0 0 0 999px var(--green-3), 0 10px 22px rgba(85, 68, 49, 0.08);
-}
-
+.count-level-1 .msg-card,
+.count-level-2 .msg-card,
+.count-level-3 .msg-card,
 .count-level-4 .msg-card {
-  box-shadow: inset 0 0 0 999px var(--green-4), 0 10px 22px rgba(85, 68, 49, 0.08);
-}
-
-.app-shell.outgoing-by-count .msg-row.outgoing:not(.count-level-1):not(.count-level-2):not(.count-level-3):not(.count-level-4) .msg-card {
-  background: var(--qq-white) !important;
   box-shadow: 0 10px 22px rgba(85, 68, 49, 0.08);
 }
 
