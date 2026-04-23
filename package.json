@@ -40,5 +40,8 @@
   "devDependencies": {
     "electron": "^41.2.2",
     "electron-builder": "^26.8.1"
+  },
+  "dependencies": {
+    "silk-wasm": "^3.7.1"
   }
 }

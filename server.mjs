@@ -5,6 +5,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { decode as decodeSilk, isSilk as isSilkFile } from 'silk-wasm';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -15,9 +16,11 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 const CHAT_DIR = path.resolve(__dirname, '..', 'chathistory');
 const execFileAsync = promisify(execFile);
 const DEFAULT_STICKER_HOST = 'https://gchat.qpic.cn';
+const DEFAULT_SILK_SAMPLE_RATE = 24000;
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp']);
 const AUDIO_EXTENSIONS = new Set(['.amr', '.mp3', '.m4a', '.wav', '.ogg', '.aac', '.opus']);
 const MEDIA_EXTENSIONS = new Set([...IMAGE_EXTENSIONS, ...AUDIO_EXTENSIONS]);
+const decodedAudioCache = new Map();
 
 const MIME_TYPES = {
   '.css': 'text/css; charset=utf-8',
@@ -71,6 +74,63 @@ function normalizeLocalFilePath(value) {
     }
   }
   return isLikelyLocalFilePath(raw) ? raw : '';
+}
+
+function writeAscii(view, offset, text) {
+  for (let index = 0; index < text.length; index += 1) {
+    view.setUint8(offset + index, text.charCodeAt(index));
+  }
+}
+
+function pcmToWavBuffer(pcmBytes, sampleRate = DEFAULT_SILK_SAMPLE_RATE, channels = 1, bitsPerSample = 16) {
+  const pcm = pcmBytes instanceof Uint8Array ? pcmBytes : new Uint8Array(pcmBytes);
+  const blockAlign = channels * (bitsPerSample / 8);
+  const byteRate = sampleRate * blockAlign;
+  const buffer = new ArrayBuffer(44 + pcm.byteLength);
+  const view = new DataView(buffer);
+
+  writeAscii(view, 0, 'RIFF');
+  view.setUint32(4, 36 + pcm.byteLength, true);
+  writeAscii(view, 8, 'WAVE');
+  writeAscii(view, 12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, channels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, byteRate, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, bitsPerSample, true);
+  writeAscii(view, 36, 'data');
+  view.setUint32(40, pcm.byteLength, true);
+  new Uint8Array(buffer, 44).set(pcm);
+  return Buffer.from(buffer);
+}
+
+async function maybeDecodeSilkAudio(targetPath) {
+  const ext = path.extname(targetPath).toLowerCase();
+  if (!AUDIO_EXTENSIONS.has(ext)) return null;
+
+  const stat = await fs.stat(targetPath);
+  const cacheKey = `${targetPath}:${stat.mtimeMs}:${stat.size}`;
+  const cached = decodedAudioCache.get(cacheKey);
+  if (cached) return cached;
+
+  const raw = await fs.readFile(targetPath);
+  if (!isSilkFile(raw)) return null;
+
+  const decoded = await decodeSilk(raw, DEFAULT_SILK_SAMPLE_RATE);
+  const wav = pcmToWavBuffer(decoded.data, DEFAULT_SILK_SAMPLE_RATE, 1, 16);
+  const result = {
+    contentType: 'audio/wav',
+    body: wav,
+  };
+
+  decodedAudioCache.set(cacheKey, result);
+  if (decodedAudioCache.size > 64) {
+    const oldestKey = decodedAudioCache.keys().next().value;
+    if (oldestKey) decodedAudioCache.delete(oldestKey);
+  }
+  return result;
 }
 
 function hasRkey(url) {
@@ -746,6 +806,7 @@ async function normalizeChatExport(chatData, fileId, fullPath) {
           ? {
               id: mapped.id,
               filename: mapped.filename,
+              occurrences: mapped.occurrences,
               downloaded: mapped.downloaded,
               downloadError: mapped.downloadError,
               previewUrl: mapped.previewUrl,
@@ -1240,6 +1301,16 @@ function createAppServer() {
           }
 
           const ext = path.extname(targetPath).toLowerCase();
+          const decodedAudio = await maybeDecodeSilkAudio(targetPath);
+          if (decodedAudio) {
+            res.writeHead(200, {
+              'Content-Type': decodedAudio.contentType,
+              'Cache-Control': 'no-store',
+            });
+            res.end(decodedAudio.body);
+            return;
+          }
+
           res.writeHead(200, {
             'Content-Type': MIME_TYPES[ext] || 'application/octet-stream',
             'Cache-Control': 'no-store',
@@ -1292,6 +1363,28 @@ function createAppServer() {
           skipped,
           failed,
           stickerPack: summarizeStickerPack(stickerConfig),
+        });
+        return;
+      }
+
+      if (req.method === 'POST' && requestUrl.pathname === '/api/stickers/recalculate') {
+        const body = await readRequestBody(req);
+        const fileId = typeof body?.fileId === 'string' ? body.fileId : '';
+        const filePath = typeof body?.filePath === 'string' ? body.filePath : '';
+        const fullPath = await resolveChatFile(fileId, filePath);
+
+        if (!fullPath) {
+          sendText(res, 404, 'Chat file not found');
+          return;
+        }
+
+        const raw = await fs.readFile(fullPath, 'utf8');
+        const chatData = JSON.parse(raw);
+        const messages = Array.isArray(chatData?.messages) ? chatData.messages : [];
+        const config = await ensureStickerConfig(fullPath, messages);
+        sendJson(res, 200, {
+          stickerPack: summarizeStickerPack(config),
+          stickerConfigPath: getDerivedPaths(fullPath).stickerConfigPath,
         });
         return;
       }

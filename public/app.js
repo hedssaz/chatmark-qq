@@ -817,8 +817,7 @@ function createMessageRow(message, count = 0, order = 0) {
   }
   row.classList.toggle('selected', order > 0);
 
-  const card = document.createElement('button');
-  card.type = 'button';
+  const card = document.createElement('div');
   card.className = 'msg-card';
   card.dataset.index = `${message.index}`;
   card.innerHTML = `
@@ -919,7 +918,6 @@ function renderVirtualWindow(force = false) {
   }
 
   els.chatList.replaceChildren(fragment);
-  scheduleMeasureRenderedRows();
 }
 
 function scheduleVirtualRender(force = false) {
@@ -1452,6 +1450,7 @@ async function renderChat(loadToken) {
     text: '正在渲染首屏消息...',
   });
   renderVirtualWindow(true);
+  scheduleMeasureRenderedRows();
   await pauseForFrame();
 }
 
@@ -1549,6 +1548,7 @@ async function refreshChatAfterStickerDownload() {
   renderSchemaNote();
   initializeVirtualState();
   renderVirtualWindow(true);
+  scheduleMeasureRenderedRows();
   els.chatScroll.scrollTop = currentScrollTop;
   scheduleVirtualRender(true);
 }
@@ -1592,6 +1592,7 @@ async function saveStickerHostSetting() {
     renderStickerSummary();
     initializeVirtualState();
     renderVirtualWindow(true);
+    scheduleMeasureRenderedRows();
   } catch (error) {
     alert(error instanceof Error ? error.message : String(error));
   } finally {
@@ -1870,7 +1871,7 @@ function bindEvents() {
   els.toggleRoleSwap.addEventListener('click', handleRoleSwapToggle);
   els.applyRoleMapping.addEventListener('click', applyRoleMappingToAllAnnotations);
   els.extractStickerRkey.addEventListener('click', fillRkeyFromSampleUrl);
-  els.calculateStickerDownloads.addEventListener('click', calculateStickerCandidates);
+  els.calculateStickerDownloads.addEventListener('click', calculateStickerCandidatesLatest);
   els.saveStickerHost.addEventListener('click', saveStickerHostSetting);
   els.stickerMinOccurrences.addEventListener('input', () => {
     if (els.stickerCandidateSummary) {
@@ -1895,7 +1896,7 @@ function bindEvents() {
     }
 
     const minOccurrences = parsePositiveInteger(els.stickerMinOccurrences?.value, 1);
-    const candidates = calculateStickerCandidates();
+    const candidates = await calculateStickerCandidatesLatest();
     if (!candidates.length) {
       alert(`当前没有出现至少 ${minOccurrences} 次的表情包。`);
       return;
@@ -2650,7 +2651,7 @@ function overrideBindEvents() {
   els.toggleRoleSwap.addEventListener('click', handleRoleSwapToggle);
   els.applyRoleMapping.addEventListener('click', applyRoleMappingToAllAnnotations);
   els.extractStickerRkey.addEventListener('click', fillRkeyFromSampleUrl);
-  els.calculateStickerDownloads.addEventListener('click', calculateStickerCandidates);
+  els.calculateStickerDownloads.addEventListener('click', calculateStickerCandidatesLatest);
   els.saveStickerHost.addEventListener('click', saveStickerHostSetting);
   els.stickerMinOccurrences.addEventListener('input', () => {
     if (els.stickerCandidateSummary) {
@@ -2697,7 +2698,7 @@ function overrideBindEvents() {
     }
 
     const minOccurrences = parsePositiveInteger(els.stickerMinOccurrences?.value, 1);
-    const candidates = calculateStickerCandidates();
+    const candidates = await calculateStickerCandidatesLatest();
     if (!candidates.length) {
       alert(`当前没有出现至少 ${minOccurrences} 次的表情包。`);
       return;
@@ -2961,7 +2962,10 @@ function renderStickerGalleryHtml(stickers) {
       ${stickers
         .map((sticker) => {
           const filename = escapeHtml(sticker.filename || '未命名图片');
-          const label = `图片/表情包#${escapeHtml(sticker.id || '?')} · ${filename}`;
+          const occurrenceText = Number(sticker?.occurrences || 0) > 0
+            ? ` · 出现 ${escapeHtml(sticker.occurrences)} 次`
+            : '';
+          const label = `图片/表情包#${escapeHtml(sticker.id || '?')}${occurrenceText} · ${filename}`;
           if (sticker.previewUrl) {
             return `
               <div class="msg-sticker-entry">
@@ -2977,6 +2981,42 @@ function renderStickerGalleryHtml(stickers) {
         .join('')}
     </div>
   `;
+}
+
+function applyStickerPackToChat(nextPack, stickerConfigPath = '') {
+  if (!state.chat || !nextPack) return;
+  state.chat.stickerPack = nextPack;
+  if (stickerConfigPath) state.chat.stickerConfigPath = stickerConfigPath;
+  const stickerItemMap = new Map((nextPack.items || []).map((item) => [normalizeStickerFilename(item.filename), item]));
+  state.chat.messages = (state.chat.messages || []).map((message) => ({
+    ...message,
+    stickers: (message.stickers || []).map((sticker) => {
+      const updated = stickerItemMap.get(normalizeStickerFilename(sticker.filename));
+      return updated ? { ...sticker, ...updated } : sticker;
+    }),
+  }));
+}
+
+async function calculateStickerCandidatesLatest() {
+  if (state.currentFilePath || state.currentFileId) {
+    const result = await fetchJson('/api/stickers/recalculate', {
+      method: 'POST',
+      body: JSON.stringify({
+        fileId: state.currentFileId,
+        filePath: state.currentFilePath,
+      }),
+    });
+    applyStickerPackToChat(result.stickerPack, result.stickerConfigPath);
+    renderStickerSummary();
+    renderVirtualWindow(true);
+  }
+
+  const minOccurrences = parsePositiveInteger(els.stickerMinOccurrences?.value, 1);
+  const candidates = (stickerPack().items || []).filter((item) => Number(item.occurrences || 0) >= minOccurrences);
+  if (els.stickerCandidateSummary) {
+    els.stickerCandidateSummary.textContent = `已重新统计。当前阈值会处理 ${candidates.length} 个表情包，阈值为至少出现 ${minOccurrences} 次。`;
+  }
+  return candidates;
 }
 
 async function init() {
