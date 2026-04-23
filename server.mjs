@@ -43,11 +43,17 @@ const MIME_TYPES = {
   '.webmanifest': 'application/manifest+json; charset=utf-8',
 };
 
+const DEFAULT_CHAT_PREFERENCES = {
+  replyReturnSeconds: 10,
+  outgoingFixedGreen: true,
+};
+
 function getDerivedPaths(chatFilePath) {
   const parsed = path.parse(chatFilePath);
   return {
     annotationsPath: path.join(parsed.dir, `${parsed.name}.annotations.json`),
     progressPath: path.join(parsed.dir, `${parsed.name}.annotation-progress.json`),
+    preferencesPath: path.join(parsed.dir, `${parsed.name}.chatmark-settings.json`),
     stickerConfigPath: path.join(parsed.dir, `${parsed.name}.sticker-map.json`),
     stickerDir: path.join(parsed.dir, `${parsed.name}.stickers`),
   };
@@ -705,6 +711,282 @@ function normalizeText(value) {
   return `${value ?? ''}`.trim();
 }
 
+function normalizeChatPreferences(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  const replyReturnSeconds = Math.max(1, Number.parseInt(source.replyReturnSeconds, 10) || DEFAULT_CHAT_PREFERENCES.replyReturnSeconds);
+  const outgoingFixedGreen = typeof source.outgoingFixedGreen === 'boolean'
+    ? source.outgoingFixedGreen
+    : DEFAULT_CHAT_PREFERENCES.outgoingFixedGreen;
+
+  return {
+    replyReturnSeconds,
+    outgoingFixedGreen,
+  };
+}
+
+async function readChatPreferences(chatFilePath) {
+  const { preferencesPath } = getDerivedPaths(chatFilePath);
+  try {
+    const raw = await fs.readFile(preferencesPath, 'utf8');
+    return normalizeChatPreferences(JSON.parse(raw));
+  } catch {
+    return { ...DEFAULT_CHAT_PREFERENCES };
+  }
+}
+
+async function writeChatPreferences(chatFilePath, preferences) {
+  const { preferencesPath } = getDerivedPaths(chatFilePath);
+  const normalized = normalizeChatPreferences(preferences);
+  await fs.writeFile(preferencesPath, JSON.stringify({
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    ...normalized,
+  }, null, 2), 'utf8');
+  return normalized;
+}
+
+function normalizeMergeMessageKey(message) {
+  const id = normalizeText(message?.id);
+  const seq = normalizeText(message?.seq);
+  const timestamp = Number(message?.timestamp ?? 0) || 0;
+  const senderUid = normalizeText(message?.sender?.uid);
+  const type = normalizeText(message?.type);
+  const text = normalizeText(message?.content?.text);
+  if (id || seq || timestamp || senderUid || type || text) {
+    return ['core', id, seq, timestamp, senderUid, type, text].join('|');
+  }
+  return `raw|${JSON.stringify(message)}`;
+}
+
+function countMessageTypes(messages) {
+  const messageTypes = {};
+  for (const message of messages) {
+    const key = normalizeText(message?.type) || 'unknown';
+    messageTypes[key] = (messageTypes[key] || 0) + 1;
+  }
+  return messageTypes;
+}
+
+function countSenders(messages) {
+  const totalMessages = messages.length || 1;
+  const senderMap = new Map();
+
+  for (const message of messages) {
+    const uid = normalizeText(message?.sender?.uid);
+    const name = normalizeText(message?.sender?.name);
+    const senderKey = uid || name;
+    if (!senderKey) continue;
+    const existing = senderMap.get(senderKey) || { uid, name, messageCount: 0 };
+    existing.uid = existing.uid || uid;
+    existing.name = existing.name || name;
+    existing.messageCount += 1;
+    senderMap.set(senderKey, existing);
+  }
+
+  return [...senderMap.values()]
+    .sort((a, b) => b.messageCount - a.messageCount)
+    .map((sender) => ({
+      uid: sender.uid,
+      name: sender.name,
+      messageCount: sender.messageCount,
+      percentage: Number(((sender.messageCount / totalMessages) * 100).toFixed(2)),
+    }));
+}
+
+function summarizeResources(messages) {
+  const byType = {};
+  let total = 0;
+  let totalSize = 0;
+
+  for (const message of messages) {
+    const entries = [];
+    for (const resource of message?.content?.resources || []) {
+      entries.push({
+        type: normalizeText(resource?.type),
+        filename: normalizeText(resource?.filename),
+        url: normalizeText(resource?.url),
+        size: Number(resource?.size || 0),
+      });
+    }
+    for (const element of message?.content?.elements || []) {
+      if (!['image', 'audio', 'video', 'file'].includes(`${element?.type || ''}`)) continue;
+      entries.push({
+        type: normalizeText(element?.type),
+        filename: normalizeText(element?.data?.filename),
+        url: normalizeText(element?.data?.url),
+        size: Number(element?.data?.size || 0),
+      });
+    }
+
+    const seen = new Set();
+    for (const entry of entries) {
+      if (!entry.type) continue;
+      const key = `${entry.type}|${entry.filename}|${entry.url}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      total += 1;
+      byType[entry.type] = (byType[entry.type] || 0) + 1;
+      totalSize += entry.size;
+    }
+  }
+
+  return {
+    total,
+    byType,
+    totalSize,
+  };
+}
+
+function rebuildStatistics(messages) {
+  const timestamps = messages
+    .map((message) => Number(message?.timestamp ?? 0))
+    .filter((value) => Number.isFinite(value) && value > 0);
+
+  const start = timestamps.length ? new Date(Math.min(...timestamps)).toISOString() : '';
+  const end = timestamps.length ? new Date(Math.max(...timestamps)).toISOString() : '';
+  const durationDays = start && end
+    ? Math.max(0, Math.round((Date.parse(end) - Date.parse(start)) / (1000 * 60 * 60 * 24)))
+    : 0;
+
+  return {
+    totalMessages: messages.length,
+    timeRange: {
+      start,
+      end,
+      durationDays,
+    },
+    messageTypes: countMessageTypes(messages),
+    senders: countSenders(messages),
+    resources: summarizeResources(messages),
+  };
+}
+
+function sortMergedMessages(messages) {
+  return messages
+    .map((message, index) => ({ message, index }))
+    .sort((left, right) => {
+      const leftTimestamp = Number(left.message?.timestamp ?? 0) || 0;
+      const rightTimestamp = Number(right.message?.timestamp ?? 0) || 0;
+      if (leftTimestamp !== rightTimestamp) return leftTimestamp - rightTimestamp;
+
+      const leftSeq = Number(left.message?.seq ?? Number.NaN);
+      const rightSeq = Number(right.message?.seq ?? Number.NaN);
+      const leftSeqValid = Number.isFinite(leftSeq);
+      const rightSeqValid = Number.isFinite(rightSeq);
+      if (leftSeqValid && rightSeqValid && leftSeq !== rightSeq) {
+        return leftSeq - rightSeq;
+      }
+
+      return left.index - right.index;
+    })
+    .map((item) => item.message);
+}
+
+function isSameConversation(baseChatData, importedChatData) {
+  const baseIdentity = resolveIdentity(baseChatData);
+  const importedIdentity = resolveIdentity(importedChatData);
+  const baseType = normalizeText(baseChatData?.chatInfo?.type);
+  const importedType = normalizeText(importedChatData?.chatInfo?.type);
+
+  if (baseType && importedType && baseType !== importedType) return false;
+  if (baseIdentity.self.uid && importedIdentity.self.uid && baseIdentity.self.uid !== importedIdentity.self.uid) {
+    return false;
+  }
+  if (baseType === 'private'
+    && baseIdentity.peer.uid
+    && importedIdentity.peer.uid
+    && baseIdentity.peer.uid !== importedIdentity.peer.uid) {
+    return false;
+  }
+
+  const baseName = normalizeText(baseChatData?.chatInfo?.name);
+  const importedName = normalizeText(importedChatData?.chatInfo?.name);
+  if (!baseIdentity.peer.uid && !importedIdentity.peer.uid && baseName && importedName && baseName !== importedName) {
+    return false;
+  }
+
+  return true;
+}
+
+function mergedChatOutputPath(currentFilePath, currentChatData) {
+  const baseFilePath = normalizeText(currentChatData?.metadata?.chatmarkMerge?.baseFilePath) || currentFilePath;
+  const mergedFilePath = normalizeText(currentChatData?.metadata?.chatmarkMerge?.mergedFilePath);
+  if (mergedFilePath) return path.resolve(mergedFilePath);
+  if (currentFilePath.toLowerCase().endsWith('.merged.json')) return currentFilePath;
+  const parsed = path.parse(baseFilePath);
+  return path.join(parsed.dir, `${parsed.name}.merged.json`);
+}
+
+function mergeChatExports(existingChatData, importedChatData, { baseFilePath, mergedFilePath, importFilePath }) {
+  const existingMessages = Array.isArray(existingChatData?.messages) ? existingChatData.messages : [];
+  const importedMessages = Array.isArray(importedChatData?.messages) ? importedChatData.messages : [];
+  const seenKeys = new Set(existingMessages.map(normalizeMergeMessageKey));
+  const mergedMessages = [...existingMessages];
+  let duplicateMessages = 0;
+  let addedMessages = 0;
+
+  for (const message of importedMessages) {
+    const key = normalizeMergeMessageKey(message);
+    if (seenKeys.has(key)) {
+      duplicateMessages += 1;
+      continue;
+    }
+    seenKeys.add(key);
+    mergedMessages.push(message);
+    addedMessages += 1;
+  }
+
+  const sortedMessages = sortMergedMessages(mergedMessages);
+  const now = new Date().toISOString();
+  const mergedChatData = {
+    ...existingChatData,
+    metadata: {
+      ...(existingChatData?.metadata || {}),
+      chatmarkMerge: {
+        version: 1,
+        baseFilePath,
+        mergedFilePath,
+        lastImportFilePath: importFilePath,
+        updatedAt: now,
+        addedMessages,
+        duplicateMessages,
+      },
+    },
+    statistics: rebuildStatistics(sortedMessages),
+    messages: sortedMessages,
+  };
+
+  return {
+    mergedChatData,
+    summary: {
+      addedMessages,
+      duplicateMessages,
+      totalMessages: sortedMessages.length,
+      importFileName: path.basename(importFilePath),
+      mergedFileName: path.basename(mergedFilePath),
+    },
+  };
+}
+
+async function copyFileIfMissing(sourcePath, targetPath) {
+  if (!sourcePath || !targetPath) return;
+  if (path.resolve(sourcePath) === path.resolve(targetPath)) return;
+  if (!await pathExists(sourcePath)) return;
+  if (await pathExists(targetPath)) return;
+  await fs.copyFile(sourcePath, targetPath);
+}
+
+async function seedMergedDerivedFiles(sourceChatFilePath, mergedChatFilePath) {
+  if (!sourceChatFilePath || !mergedChatFilePath) return;
+  if (path.resolve(sourceChatFilePath) === path.resolve(mergedChatFilePath)) return;
+
+  const sourceDerived = getDerivedPaths(sourceChatFilePath);
+  const mergedDerived = getDerivedPaths(mergedChatFilePath);
+  await copyFileIfMissing(sourceDerived.annotationsPath, mergedDerived.annotationsPath);
+  await copyFileIfMissing(sourceDerived.progressPath, mergedDerived.progressPath);
+  await copyFileIfMissing(sourceDerived.preferencesPath, mergedDerived.preferencesPath);
+}
+
 function mostFrequent(values) {
   const counts = new Map();
   for (const value of values) {
@@ -800,6 +1082,7 @@ async function normalizeChatExport(chatData, fileId, fullPath) {
   const messages = Array.isArray(chatData?.messages) ? chatData.messages : [];
   const derivedPaths = getDerivedPaths(fullPath);
   const identity = resolveIdentity(chatData);
+  const preferences = await readChatPreferences(fullPath);
   const stickerConfig = await ensureStickerConfig(fullPath, messages);
   const stickerMap = new Map(summarizeStickerPack(stickerConfig).items.map((item) => [item.filename, item]));
 
@@ -864,8 +1147,10 @@ async function normalizeChatExport(chatData, fileId, fullPath) {
     fileId,
     filePath: fullPath,
     annotationPath: derivedPaths.annotationsPath,
+    preferencesPath: derivedPaths.preferencesPath,
     stickerConfigPath: derivedPaths.stickerConfigPath,
     stickerDir: derivedPaths.stickerDir,
+    preferences,
     schema: {
       sourceRepo: 'shuakami/qq-chat-exporter',
       sourceFiles: [
@@ -1281,6 +1566,62 @@ function createAppServer() {
         return;
       }
 
+      if (req.method === 'POST' && requestUrl.pathname === '/api/chat/import-merge') {
+        const body = await readRequestBody(req);
+        const fileId = typeof body?.fileId === 'string' ? body.fileId : '';
+        const filePath = typeof body?.filePath === 'string' ? body.filePath : '';
+        const currentPath = await resolveChatFile(fileId, filePath);
+        if (!currentPath) {
+          sendJson(res, 400, { error: '聊天记录文件无效。' });
+          return;
+        }
+
+        const importSelection = await openChatFileDialog();
+        if (!importSelection) {
+          sendJson(res, 200, { cancelled: true });
+          return;
+        }
+
+        const importPath = await resolveChatFile('', importSelection);
+        if (!importPath) {
+          sendJson(res, 400, { error: '新纪录文件无效。' });
+          return;
+        }
+        if (path.resolve(importPath) === path.resolve(currentPath)) {
+          sendJson(res, 400, { error: '不能把当前这份聊天记录再次导入到自己。' });
+          return;
+        }
+
+        const currentRaw = await fs.readFile(currentPath, 'utf8');
+        const importRaw = await fs.readFile(importPath, 'utf8');
+        const currentChatData = JSON.parse(currentRaw);
+        const importedChatData = JSON.parse(importRaw);
+
+        if (!isSameConversation(currentChatData, importedChatData)) {
+          sendJson(res, 400, { error: '两份 JSON 不是同一个聊天对象，无法合并。' });
+          return;
+        }
+
+        const baseFilePath = normalizeText(currentChatData?.metadata?.chatmarkMerge?.baseFilePath) || currentPath;
+        const outputPath = mergedChatOutputPath(currentPath, currentChatData);
+        const { mergedChatData, summary } = mergeChatExports(currentChatData, importedChatData, {
+          baseFilePath,
+          mergedFilePath: outputPath,
+          importFilePath: importPath,
+        });
+
+        await seedMergedDerivedFiles(currentPath, outputPath);
+        await fs.writeFile(outputPath, JSON.stringify(mergedChatData, null, 2), 'utf8');
+
+        sendJson(res, 200, {
+          cancelled: false,
+          filePath: outputPath,
+          fileId: path.basename(outputPath),
+          summary,
+        });
+        return;
+      }
+
       if (req.method === 'GET' && requestUrl.pathname === '/api/chat') {
         const fileId = requestUrl.searchParams.get('file') || '';
         const explicitPath = requestUrl.searchParams.get('path') || '';
@@ -1468,6 +1809,28 @@ function createAppServer() {
         sendJson(res, 200, {
           stickerPack: summarizeStickerPack(config),
           stickerConfigPath: getDerivedPaths(fullPath).stickerConfigPath,
+        });
+        return;
+      }
+
+      if (req.method === 'POST' && requestUrl.pathname === '/api/preferences') {
+        const body = await readRequestBody(req);
+        const fileId = typeof body?.fileId === 'string' ? body.fileId : '';
+        const filePath = typeof body?.filePath === 'string' ? body.filePath : '';
+        const fullPath = await resolveChatFile(fileId, filePath);
+        if (!fullPath) {
+          sendJson(res, 400, { error: '聊天记录文件无效。' });
+          return;
+        }
+
+        const preferences = await writeChatPreferences(fullPath, {
+          replyReturnSeconds: body?.replyReturnSeconds,
+          outgoingFixedGreen: body?.outgoingFixedGreen,
+        });
+
+        sendJson(res, 200, {
+          preferences,
+          preferencesPath: getDerivedPaths(fullPath).preferencesPath,
         });
         return;
       }

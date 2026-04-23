@@ -61,6 +61,7 @@ const els = {
   sidebarClose: document.querySelector('#sidebar-close'),
   sidebarBackdrop: document.querySelector('#sidebar-backdrop'),
   pickFile: document.querySelector('#pick-file'),
+  importMergeFile: document.querySelector('#import-merge-file'),
   openSettings: document.querySelector('#open-settings'),
   downloadStickers: document.querySelector('#download-stickers'),
   saveStickerHost: document.querySelector('#save-sticker-host'),
@@ -108,7 +109,7 @@ const els = {
   mappingPreviewList: document.querySelector('#mapping-preview-list'),
   confirmApplyRoleMapping: document.querySelector('#confirm-apply-role-mapping'),
   chatTitle: document.querySelector('#chat-title'),
-  schemaNote: document.querySelector('#schema-note'),
+  schemaNote: document.querySelector('#file-schema-note'),
   chatList: document.querySelector('#chat-list'),
   chatScroll: document.querySelector('#chat-scroll'),
   loadingOverlay: document.querySelector('#loading-overlay'),
@@ -255,6 +256,29 @@ function replyReturnDurationMs() {
 
 function applyOutgoingColorMode() {
   els.appShell?.classList.toggle('outgoing-by-count', !state.outgoingFixedGreen);
+  els.appShell?.classList.toggle('outgoing-fixed-green', state.outgoingFixedGreen);
+}
+
+async function saveDisplayPreferences() {
+  if (!state.currentFilePath && !state.currentFileId) return;
+
+  const result = await fetchJson('/api/preferences', {
+    method: 'POST',
+    body: JSON.stringify({
+      fileId: state.currentFileId,
+      filePath: state.currentFilePath,
+      replyReturnSeconds: state.replyReturnSeconds,
+      outgoingFixedGreen: state.outgoingFixedGreen,
+    }),
+  });
+
+  if (state.chat) {
+    state.chat.preferences = result.preferences || {
+      replyReturnSeconds: state.replyReturnSeconds,
+      outgoingFixedGreen: state.outgoingFixedGreen,
+    };
+    state.chat.preferencesPath = result.preferencesPath || state.chat.preferencesPath;
+  }
 }
 
 function inferRowStickers(row) {
@@ -1618,6 +1642,48 @@ async function renderChat(loadToken) {
   await pauseForFrame();
 }
 
+async function importAndMergeChatRecords() {
+  if (!state.currentFilePath && !state.currentFileId) {
+    alert('请先选择一份原版聊天记录。');
+    return;
+  }
+
+  setLoadingState({
+    visible: true,
+    percent: 10,
+    text: '正在选择新纪录并准备合并...',
+  });
+
+  try {
+    const result = await fetchJson('/api/chat/import-merge', {
+      method: 'POST',
+      body: JSON.stringify({
+        fileId: state.currentFileId,
+        filePath: state.currentFilePath,
+      }),
+    });
+
+    if (result.cancelled) {
+      hideLoading();
+      return;
+    }
+
+    state.currentFileId = result.fileId || '';
+    state.currentFilePath = result.filePath || '';
+    await loadChat('');
+    closeSidebar();
+
+    const summary = result.summary || {};
+    const importedName = summary.importFileName || '新纪录';
+    const added = Number(summary.addedMessages || 0);
+    const duplicates = Number(summary.duplicateMessages || 0);
+    alert(`合并完成。\n导入文件：${importedName}\n新增消息：${added}\n重复消息：${duplicates}`);
+  } catch (error) {
+    hideLoading();
+    throw error;
+  }
+}
+
 async function loadChat(fileId = '') {
   const query = state.currentFilePath
     ? `path=${encodeURIComponent(state.currentFilePath)}`
@@ -1669,7 +1735,16 @@ async function loadChat(fileId = '') {
     state.currentFileId = chat.fileId || state.currentFileId;
     state.currentFilePath = chat.filePath || state.currentFilePath;
     state.annotations = annotationsPayload.annotations;
+    state.replyReturnSeconds = parsePositiveInteger(chat.preferences?.replyReturnSeconds, state.replyReturnSeconds || 10);
+    state.outgoingFixedGreen = typeof chat.preferences?.outgoingFixedGreen === 'boolean'
+      ? chat.preferences.outgoingFixedGreen
+      : state.outgoingFixedGreen;
     localStorage.setItem('qq-annotator:last-file-path', state.currentFilePath);
+    localStorage.setItem('qq-annotator:reply-return-seconds', String(state.replyReturnSeconds));
+    localStorage.setItem('qq-annotator:outgoing-fixed-green', state.outgoingFixedGreen ? '1' : '0');
+    if (els.replyReturnSeconds) els.replyReturnSeconds.value = String(state.replyReturnSeconds);
+    if (els.outgoingFixedGreen) els.outgoingFixedGreen.checked = state.outgoingFixedGreen;
+    applyOutgoingColorMode();
 
     renderSelectedFileCard();
     renderChatMeta();
@@ -1882,6 +1957,7 @@ function showReplyReturnButton(sourceIndex) {
 
   state.replyReturnState = {
     sourceIndex,
+    sourceScrollTop: els.chatScroll?.scrollTop || 0,
     timerId,
   };
 
@@ -1906,15 +1982,28 @@ function jumpToReplyTarget(triggerButton) {
 
 function returnToReplySource() {
   const sourceIndex = Number(state.replyReturnState?.sourceIndex);
+  const sourceScrollTop = Number(state.replyReturnState?.sourceScrollTop);
   if (!Number.isInteger(sourceIndex) || sourceIndex < 0) {
     clearReplyReturnState();
     return;
   }
   clearReplyReturnState();
-  scrollToMessage(sourceIndex);
+  if (Number.isFinite(sourceScrollTop) && sourceScrollTop >= 0) {
+    renderVirtualWindow(true);
+    els.chatScroll.scrollTop = sourceScrollTop;
+    scheduleVirtualRender(true);
+    requestAnimationFrame(() => {
+      renderVirtualWindow(true);
+      els.chatScroll.scrollTop = sourceScrollTop;
+      scheduleVirtualRender(true);
+      flashMessageRow(sourceIndex);
+    });
+    return;
+  }
+  scrollToMessage(sourceIndex, { behavior: 'auto' });
 }
 
-function scrollToMessage(index) {
+function scrollToMessage(index, { behavior = 'smooth' } = {}) {
   if (!state.chat?.messages?.[index]) return;
 
   const itemTop = state.virtual.offsets[index] || 0;
@@ -1922,7 +2011,8 @@ function scrollToMessage(index) {
   const viewportHeight = els.chatScroll.clientHeight || 0;
   const targetTop = Math.max(0, itemTop - Math.max(0, (viewportHeight - itemHeight) / 2));
 
-  els.chatScroll.scrollTo({ top: targetTop, behavior: 'smooth' });
+  renderVirtualWindow(true);
+  els.chatScroll.scrollTo({ top: targetTop, behavior });
   scheduleVirtualRender(true);
   flashMessageRow(index);
 }
@@ -2096,15 +2186,26 @@ function bindEvents() {
   els.extractStickerRkey.addEventListener('click', fillRkeyFromSampleUrl);
   els.calculateStickerDownloads.addEventListener('click', calculateStickerCandidatesLatest);
   els.saveStickerHost.addEventListener('click', saveStickerHostSetting);
-  els.replyReturnSeconds?.addEventListener('input', (event) => {
+  els.replyReturnSeconds?.addEventListener('change', async (event) => {
     state.replyReturnSeconds = parsePositiveInteger(event.target.value, 10);
     localStorage.setItem('qq-annotator:reply-return-seconds', String(state.replyReturnSeconds));
+    event.target.value = String(state.replyReturnSeconds);
+    try {
+      await saveDisplayPreferences();
+    } catch (error) {
+      alert(error.message || '保存显示设置失败。');
+    }
   });
-  els.outgoingFixedGreen?.addEventListener('change', (event) => {
+  els.outgoingFixedGreen?.addEventListener('change', async (event) => {
     state.outgoingFixedGreen = Boolean(event.target.checked);
     localStorage.setItem('qq-annotator:outgoing-fixed-green', state.outgoingFixedGreen ? '1' : '0');
     applyOutgoingColorMode();
     refreshMessageDecorations();
+    try {
+      await saveDisplayPreferences();
+    } catch (error) {
+      alert(error.message || '保存显示设置失败。');
+    }
   });
   const handleStickerFilterInput = () => {
     if (els.stickerCandidateSummary) {
@@ -2113,6 +2214,8 @@ function bindEvents() {
   };
   els.stickerMinOccurrences.addEventListener('input', handleStickerFilterInput);
   els.stickerRecentDays?.addEventListener('input', handleStickerFilterInput);
+
+  els.importMergeFile?.addEventListener('click', importAndMergeChatRecords);
 
   els.pickFile.addEventListener('click', async () => {
     const result = await fetchJson('/api/select-file', { method: 'POST' });
@@ -2899,9 +3002,31 @@ function overrideBindEvents() {
   els.closeSettingsDialog.addEventListener('click', closeSettingsDialog);
   els.toggleRoleSwap.addEventListener('click', handleRoleSwapToggle);
   els.applyRoleMapping.addEventListener('click', applyRoleMappingToAllAnnotations);
+  els.replyReturnButton?.addEventListener('click', returnToReplySource);
   els.extractStickerRkey.addEventListener('click', fillRkeyFromSampleUrl);
   els.calculateStickerDownloads.addEventListener('click', calculateStickerCandidatesLatest);
   els.saveStickerHost.addEventListener('click', saveStickerHostSetting);
+  els.replyReturnSeconds?.addEventListener('change', async (event) => {
+    state.replyReturnSeconds = parsePositiveInteger(event.target.value, 10);
+    localStorage.setItem('qq-annotator:reply-return-seconds', String(state.replyReturnSeconds));
+    event.target.value = String(state.replyReturnSeconds);
+    try {
+      await saveDisplayPreferences();
+    } catch (error) {
+      alert(error.message || '保存显示设置失败。');
+    }
+  });
+  els.outgoingFixedGreen?.addEventListener('change', async (event) => {
+    state.outgoingFixedGreen = Boolean(event.target.checked);
+    localStorage.setItem('qq-annotator:outgoing-fixed-green', state.outgoingFixedGreen ? '1' : '0');
+    applyOutgoingColorMode();
+    refreshMessageDecorations();
+    try {
+      await saveDisplayPreferences();
+    } catch (error) {
+      alert(error.message || '保存显示设置失败。');
+    }
+  });
   const handleStickerFilterInput = () => {
     if (els.stickerCandidateSummary) {
       els.stickerCandidateSummary.textContent = '筛选条件已变更，点“计算图片重复数量”查看这次会处理多少图片/表情包。';
@@ -2931,6 +3056,8 @@ function overrideBindEvents() {
     state.exportSystemPrompt = event.target.value || '';
     localStorage.setItem('qq-annotator:export-system-prompt', state.exportSystemPrompt);
   });
+
+  els.importMergeFile?.addEventListener('click', importAndMergeChatRecords);
 
   els.pickFile.addEventListener('click', async () => {
     const result = await fetchJson('/api/select-file', { method: 'POST' });

@@ -27,20 +27,20 @@
         <section class="panel">
           <div class="panel-header">
             <h2>选择聊天记录</h2>
-            <button id="pick-file" class="primary-btn" type="button">选择文件</button>
+            <div class="annotation-actions">
+              <button id="import-merge-file" class="secondary-btn" type="button">导入新记录并合并</button>
+              <button id="pick-file" class="primary-btn" type="button">选择文件</button>
+            </div>
           </div>
           <div id="selected-file-card" class="placeholder-card">还没有选中文件。</div>
           <div id="chat-meta" class="meta-stack"></div>
+          <div id="file-schema-note" class="schema-note file-schema-note"></div>
         </section>
 
         <section class="panel">
           <div class="panel-header">
             <h2>当前选择</h2>
             <button id="clear-selection" class="ghost-btn" type="button">清空</button>
-          </div>
-          <div class="button-row">
-            <button id="review-selection" class="primary-btn" type="button">核对并提交</button>
-            <button id="jump-earliest" class="secondary-btn" type="button">回到最远已标注</button>
           </div>
           <div id="selection-empty" class="placeholder-card">还没有选中任何消息。</div>
           <ol id="selection-list" class="selection-list"></ol>
@@ -77,7 +77,10 @@
               <h2 id="chat-title">请选择聊天记录</h2>
             </div>
           </div>
-          <div id="schema-note" class="schema-note"></div>
+          <div class="annotation-actions">
+            <button id="review-selection" class="primary-btn" type="button">核对并提交</button>
+            <button id="jump-earliest" class="secondary-btn" type="button">回到最远已标注</button>
+          </div>
         </header>
 
         <div id="loading-overlay" class="loading-overlay" hidden>
