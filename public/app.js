@@ -40,11 +40,13 @@ const state = {
     heights: [],
     offsets: [0],
     totalHeight: 0,
+    lastScrollTop: 0,
     rangeStart: 0,
     rangeEnd: -1,
     rafPending: false,
     forcePending: false,
     measurePending: false,
+    resizeObserver: null,
   },
 };
 
@@ -451,7 +453,7 @@ function renderStickerGalleryHtmlLegacy(stickers) {
           if (sticker.previewUrl) {
             return `
               <figure class="msg-sticker-item">
-                <img class="msg-sticker-img" src="${escapeHtml(sticker.previewUrl)}" alt="${filename}" loading="lazy" />
+                <img class="msg-sticker-img" src="${escapeHtml(sticker.previewUrl)}" alt="${filename}" />
                 <figcaption class="msg-sticker-caption">图片/表情包#${escapeHtml(sticker.id || '?')} · ${filename}</figcaption>
               </figure>
             `;
@@ -491,7 +493,6 @@ function renderAudioFilesHtml(audioFiles) {
                 >播放</button>
                 <span class="msg-audio-meta">${duration > 0 ? `${duration} 秒` : '语音'}</span>
               </div>
-              <audio class="msg-audio-player" preload="none" src="${escapeHtml(audio.previewUrl)}" hidden></audio>
             </div>
           `;
         }
@@ -523,15 +524,25 @@ function stopActiveAudioPlayback() {
 }
 
 async function handleAudioToggle(button) {
-  const container = button?.closest('.msg-audio-item');
-  const audio = container?.querySelector('.msg-audio-player');
-  if (!audio) return;
+  const src = button?.dataset?.audioSrc;
+  if (!src) return;
 
-  if (state.activeAudio?.audio && state.activeAudio.audio !== audio) {
+  const active = state.activeAudio;
+  const sameSource = active?.audio?.src === src || active?.audio?.src === new URL(src, window.location.href).href;
+  if (!active?.audio) {
+    state.activeAudio = { audio: new Audio(), button: null };
+  }
+  const audio = state.activeAudio.audio;
+
+  if (active?.audio && active.button && !sameSource) {
     stopActiveAudioPlayback();
   }
 
-  if (audio.paused) {
+  if (!sameSource) {
+    audio.src = src;
+  }
+
+  if (audio.paused || !sameSource) {
     try {
       await audio.play();
       button.textContent = '暂停';
@@ -555,7 +566,7 @@ async function handleAudioToggle(button) {
       resetAudioToggle(button);
       alert(error instanceof Error ? error.message : String(error));
     }
-    return;
+    return false;
   }
 
   audio.pause();
@@ -739,7 +750,7 @@ function estimateMessageHeight(message) {
   const extraElementCount = normalizedMessageElements(message).filter((element) => !['text', 'image', 'audio'].includes(element?.type)).length;
   const base = message.senderKey === 'other' || message.senderKey === 'system' ? 82 : 106;
   const extra = Math.min(320, Math.max(0, wrappedLines - 1) * 20);
-  const stickerExtra = stickerCount > 0 ? Math.min(360, stickerCount * 156) : 0;
+  const stickerExtra = stickerCount > 0 ? Math.min(480, stickerCount * 212) : 0;
   const audioExtra = audioCount > 0 ? Math.min(220, audioCount * 88) : 0;
   const elementExtra = extraElementCount > 0 ? Math.min(280, extraElementCount * 62) : 0;
   const badgeExtra = (message?.recalled || message?.system || (message?.type && message.type !== 'type_1')) ? 26 : 0;
@@ -748,6 +759,7 @@ function estimateMessageHeight(message) {
 
 function initializeVirtualState() {
   const messages = state.chat?.messages || [];
+  state.virtual.resizeObserver?.disconnect();
   state.virtual.heights = messages.map(estimateMessageHeight);
   state.virtual.offsets = new Array(messages.length + 1);
   state.virtual.offsets[0] = 0;
@@ -755,6 +767,7 @@ function initializeVirtualState() {
     state.virtual.offsets[index + 1] = state.virtual.offsets[index] + state.virtual.heights[index];
   }
   state.virtual.totalHeight = state.virtual.offsets[messages.length] || 0;
+  state.virtual.lastScrollTop = 0;
   state.virtual.rangeStart = 0;
   state.virtual.rangeEnd = -1;
   state.virtual.rafPending = false;
@@ -762,12 +775,23 @@ function initializeVirtualState() {
   state.virtual.measurePending = false;
 }
 
+function ensureVirtualResizeObserver() {
+  if (state.virtual.resizeObserver || typeof ResizeObserver === 'undefined') {
+    return state.virtual.resizeObserver;
+  }
+
+  state.virtual.resizeObserver = new ResizeObserver(() => {
+    scheduleMeasureRenderedRows();
+  });
+  return state.virtual.resizeObserver;
+}
+
 function recomputeOffsetsFrom(startIndex = 0) {
   const { heights, offsets } = state.virtual;
   if (!heights.length) {
     state.virtual.offsets = [0];
     state.virtual.totalHeight = 0;
-    return;
+    return false;
   }
 
   const begin = Math.max(0, Math.min(startIndex, heights.length - 1));
@@ -798,13 +822,6 @@ function findIndexForOffset(offset) {
   }
 
   return Math.min(heights.length - 1, low);
-}
-
-function createSpacer(height) {
-  const spacer = document.createElement('li');
-  spacer.className = 'virtual-spacer';
-  spacer.style.height = `${Math.max(0, height)}px`;
-  return spacer;
 }
 
 function createMessageRow(message, count = 0, order = 0) {
@@ -851,37 +868,91 @@ function createMessageRow(message, count = 0, order = 0) {
   return row;
 }
 
+function captureVisibleAnchor() {
+  const scrollerRect = els.chatScroll.getBoundingClientRect();
+  const anchorThreshold = scrollerRect.top + 8;
+
+  for (const [index, row] of state.messageRowRefs.entries()) {
+    const rect = row.getBoundingClientRect();
+    if (rect.bottom >= anchorThreshold) {
+      return {
+        index,
+        offsetTop: rect.top - scrollerRect.top,
+      };
+    }
+  }
+
+  const firstVisible = state.messageRowRefs.entries().next();
+  if (!firstVisible.done) {
+    const [index, row] = firstVisible.value;
+    const rect = row.getBoundingClientRect();
+    return {
+      index,
+      offsetTop: rect.top - scrollerRect.top,
+    };
+  }
+
+  return null;
+}
+
+function restoreVisibleAnchor(anchor) {
+  if (!anchor) return;
+
+  const row = state.messageRowRefs.get(anchor.index);
+  if (!row) return;
+
+  const scrollerRect = els.chatScroll.getBoundingClientRect();
+  const rect = row.getBoundingClientRect();
+  const currentOffsetTop = rect.top - scrollerRect.top;
+  const adjust = currentOffsetTop - anchor.offsetTop;
+
+  if (Math.abs(adjust) > 1) {
+    els.chatScroll.scrollTop += adjust;
+  }
+}
+
+function measureRenderedRowsNow() {
+  const anchor = captureVisibleAnchor();
+
+  let minChangedIndex = Number.POSITIVE_INFINITY;
+  for (const [index, row] of state.messageRowRefs.entries()) {
+    const measuredHeight = Math.ceil(row.getBoundingClientRect().height + ITEM_GAP);
+    if (Math.abs(measuredHeight - state.virtual.heights[index]) > 2) {
+      state.virtual.heights[index] = measuredHeight;
+      minChangedIndex = Math.min(minChangedIndex, index);
+    }
+  }
+
+  if (Number.isFinite(minChangedIndex)) {
+    recomputeOffsetsFrom(minChangedIndex);
+    renderVirtualWindow(true);
+    restoreVisibleAnchor(anchor);
+    return true;
+  }
+
+  return false;
+}
+
 function scheduleMeasureRenderedRows() {
   if (state.virtual.measurePending) return;
   state.virtual.measurePending = true;
 
   requestAnimationFrame(() => {
     state.virtual.measurePending = false;
-
-    let minChangedIndex = Number.POSITIVE_INFINITY;
-    for (const [index, row] of state.messageRowRefs.entries()) {
-      const measuredHeight = Math.ceil(row.getBoundingClientRect().height + ITEM_GAP);
-      if (Math.abs(measuredHeight - state.virtual.heights[index]) > 2) {
-        state.virtual.heights[index] = measuredHeight;
-        minChangedIndex = Math.min(minChangedIndex, index);
-      }
-    }
-
-    if (Number.isFinite(minChangedIndex)) {
-      recomputeOffsetsFrom(minChangedIndex);
-      renderVirtualWindow(true);
-    }
+    measureRenderedRowsNow();
   });
 }
 
 function renderVirtualWindow(force = false) {
   const messages = state.chat?.messages || [];
   if (!messages.length) {
+    state.virtual.resizeObserver?.disconnect();
+    els.chatList.style.height = '';
     els.chatList.innerHTML = '<li class="placeholder-card">没有可显示的聊天记录。</li>';
     state.messageRowRefs = new Map();
     state.messageOrderChipRefs = new Map();
     state.messageCountChipRefs = new Map();
-    return;
+    return false;
   }
 
   const viewportTop = els.chatScroll.scrollTop;
@@ -890,7 +961,7 @@ function renderVirtualWindow(force = false) {
   const end = Math.min(messages.length - 1, findIndexForOffset(viewportBottom + OVERSCAN_PX));
 
   if (!force && start === state.virtual.rangeStart && end === state.virtual.rangeEnd) {
-    return;
+    return false;
   }
 
   state.virtual.rangeStart = start;
@@ -901,23 +972,22 @@ function renderVirtualWindow(force = false) {
 
   const counts = annotationCountMap();
   const orders = selectionOrderMap();
-  const topHeight = state.virtual.offsets[start] || 0;
-  const bottomHeight = state.virtual.totalHeight - (state.virtual.offsets[end + 1] || 0);
   const fragment = document.createDocumentFragment();
-
-  if (topHeight > 0) {
-    fragment.appendChild(createSpacer(topHeight));
-  }
+  els.chatList.style.height = `${Math.max(state.virtual.totalHeight, els.chatScroll.clientHeight || 0)}px`;
+  const resizeObserver = ensureVirtualResizeObserver();
+  resizeObserver?.disconnect();
 
   for (let index = start; index <= end; index += 1) {
-    fragment.appendChild(createMessageRow(messages[index], counts.get(index) || 0, orders.get(index) || 0));
-  }
-
-  if (bottomHeight > 0) {
-    fragment.appendChild(createSpacer(bottomHeight));
+    const row = createMessageRow(messages[index], counts.get(index) || 0, orders.get(index) || 0);
+    row.style.top = `${state.virtual.offsets[index] || 0}px`;
+    fragment.appendChild(row);
   }
 
   els.chatList.replaceChildren(fragment);
+  for (const row of state.messageRowRefs.values()) {
+    resizeObserver?.observe(row);
+  }
+  return true;
 }
 
 function scheduleVirtualRender(force = false) {
@@ -929,7 +999,10 @@ function scheduleVirtualRender(force = false) {
     const shouldForce = state.virtual.forcePending;
     state.virtual.rafPending = false;
     state.virtual.forcePending = false;
-    renderVirtualWindow(shouldForce);
+    const changed = renderVirtualWindow(shouldForce);
+    if (changed) {
+      measureRenderedRowsNow();
+    }
   });
 }
 
@@ -2006,6 +2079,18 @@ function bindEvents() {
   els.confirmApplyRoleMapping.addEventListener('click', confirmApplyRoleMapping);
 
   els.chatScroll.addEventListener('scroll', () => {
+    const currentTop = els.chatScroll.scrollTop;
+    const delta = Math.abs(currentTop - state.virtual.lastScrollTop);
+    state.virtual.lastScrollTop = currentTop;
+
+    if (delta > (els.chatScroll.clientHeight || 0) * 0.75) {
+      const changed = renderVirtualWindow(true);
+      if (changed) {
+        measureRenderedRowsNow();
+      }
+      return;
+    }
+
     scheduleVirtualRender();
   });
 
@@ -2969,7 +3054,7 @@ function renderStickerGalleryHtml(stickers) {
           if (sticker.previewUrl) {
             return `
               <div class="msg-sticker-entry">
-                <img class="msg-sticker-img" src="${escapeHtml(sticker.previewUrl)}" alt="${filename}" loading="lazy" />
+                <img class="msg-sticker-img" src="${escapeHtml(sticker.previewUrl)}" alt="${filename}" />
                 <div class="msg-sticker-caption">${label}</div>
               </div>
             `;
