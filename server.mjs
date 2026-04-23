@@ -249,6 +249,7 @@ function buildStickerCatalog(messages) {
 
   for (let index = 0; index < messages.length; index += 1) {
     const entries = extractStickerEntriesFromMessage(messages[index]);
+    const messageTimestamp = Number(messages[index]?.timestamp || 0) || null;
     for (const entry of entries) {
       totalOccurrences += 1;
       const existing = byFilename.get(entry.filename);
@@ -256,6 +257,9 @@ function buildStickerCatalog(messages) {
         existing.occurrences += 1;
         if (!existing.remoteUrl && entry.remoteUrl) existing.remoteUrl = entry.remoteUrl;
         if (!existing.relativeUrl && entry.relativeUrl) existing.relativeUrl = entry.relativeUrl;
+        if (messageTimestamp && (!existing.lastSeenTimestamp || messageTimestamp > existing.lastSeenTimestamp)) {
+          existing.lastSeenTimestamp = messageTimestamp;
+        }
         continue;
       }
 
@@ -263,6 +267,8 @@ function buildStickerCatalog(messages) {
         ...entry,
         occurrences: 1,
         firstSeenIndex: index,
+        firstSeenTimestamp: messageTimestamp,
+        lastSeenTimestamp: messageTimestamp,
       });
     }
   }
@@ -487,6 +493,8 @@ async function ensureStickerConfig(chatFilePath, messages) {
       filename: entry.filename,
       occurrences: entry.occurrences,
       firstSeenIndex: entry.firstSeenIndex,
+      firstSeenTimestamp: entry.firstSeenTimestamp || null,
+      lastSeenTimestamp: entry.lastSeenTimestamp || entry.firstSeenTimestamp || null,
       relativeUrl: entry.relativeUrl || `${current?.relativeUrl ?? ''}`,
       remoteUrl: resolveStickerRemoteUrl(entry.relativeUrl || current?.relativeUrl || entry.remoteUrl || current?.remoteUrl || '', stickerHost),
       localFile,
@@ -529,6 +537,8 @@ function summarizeStickerPack(stickerConfig) {
       id: Number(item?.id) || 0,
       filename: normalizeStickerFilename(item?.filename),
       occurrences: Number(item?.occurrences ?? 0),
+      firstSeenTimestamp: Number(item?.firstSeenTimestamp ?? 0) || null,
+      lastSeenTimestamp: Number(item?.lastSeenTimestamp ?? 0) || null,
       remoteUrl: `${item?.remoteUrl ?? ''}`,
       relativeUrl: `${item?.relativeUrl ?? ''}`,
       downloaded: Boolean(item?.downloaded),

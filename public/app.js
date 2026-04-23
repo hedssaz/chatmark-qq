@@ -64,6 +64,7 @@ const els = {
   extractStickerRkey: document.querySelector('#extract-sticker-rkey'),
   calculateStickerDownloads: document.querySelector('#calculate-sticker-downloads'),
   stickerMinOccurrences: document.querySelector('#sticker-min-occurrences'),
+  stickerRecentDays: document.querySelector('#sticker-recent-days'),
   selectedFileCard: document.querySelector('#selected-file-card'),
   chatMeta: document.querySelector('#chat-meta'),
   stickerSummary: document.querySelector('#sticker-summary'),
@@ -167,6 +168,32 @@ function stickerPack() {
 
 function stickerMap() {
   return new Map((stickerPack().items || []).map((item) => [normalizeStickerFilename(item.filename), item]));
+}
+
+function stickerFilterSettings() {
+  return {
+    minOccurrences: parsePositiveInteger(els.stickerMinOccurrences?.value, 2),
+    recentDays: parseNonNegativeInteger(els.stickerRecentDays?.value, 0),
+  };
+}
+
+function parseNonNegativeInteger(value, fallback = 0) {
+  const parsed = Number.parseInt(`${value ?? ''}`.trim(), 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function stickerCutoffTimestamp(recentDays) {
+  if (!Number.isFinite(recentDays) || recentDays <= 0) return 0;
+  return Date.now() - recentDays * 24 * 60 * 60 * 1000;
+}
+
+function filterStickerCandidates(items = [], { minOccurrences, recentDays }) {
+  const cutoff = stickerCutoffTimestamp(recentDays);
+  return items.filter((item) => {
+    const occurrences = Number(item?.occurrences || 0);
+    const lastSeenTimestamp = Number(item?.lastSeenTimestamp || item?.firstSeenTimestamp || 0) || 0;
+    return occurrences >= minOccurrences && (!cutoff || !lastSeenTimestamp || lastSeenTimestamp >= cutoff);
+  });
 }
 
 function parsePositiveInteger(value, fallback = 1) {
@@ -1327,12 +1354,13 @@ function overrideRenderChatMeta() {
 
 function renderStickerSummary() {
   if (!state.chat) {
-    els.stickerSummary.innerHTML = '载入聊天后会统计图片数量，并把下载和映射状态显示在这里。';
+    els.stickerSummary.innerHTML = '载入聊天后会统计图片/表情包数量，并把下载和映射状态显示在这里。';
     els.downloadStickers.disabled = true;
     if (els.saveStickerHost) els.saveStickerHost.disabled = true;
     if (els.stickerHostInput) els.stickerHostInput.value = '';
-    if (els.stickerMinOccurrences) els.stickerMinOccurrences.value = '1';
-    if (els.stickerCandidateSummary) els.stickerCandidateSummary.textContent = '当前还没计算待下载数量。';
+    if (els.stickerMinOccurrences) els.stickerMinOccurrences.value = '2';
+    if (els.stickerRecentDays) els.stickerRecentDays.value = '0';
+    if (els.stickerCandidateSummary) els.stickerCandidateSummary.textContent = '当前还没计算图片重复数量。';
     setStickerDownloadProgress({ visible: false });
     return;
   }
@@ -1341,11 +1369,14 @@ function renderStickerSummary() {
   els.downloadStickers.disabled = false;
   if (els.saveStickerHost) els.saveStickerHost.disabled = false;
   if (els.stickerHostInput) els.stickerHostInput.value = pack.host || 'https://gchat.qpic.cn';
+  if (els.stickerMinOccurrences && !els.stickerMinOccurrences.value) els.stickerMinOccurrences.value = '2';
+  if (els.stickerRecentDays && !els.stickerRecentDays.value) els.stickerRecentDays.value = '0';
   els.stickerSummary.innerHTML = `
-    <strong>共 ${pack.totalImages || 0} 条图片消息 / ${pack.uniqueStickers || 0} 个唯一表情包</strong>
+    <strong>共 ${pack.totalImages || 0} 条图片消息 / ${pack.uniqueStickers || 0} 个唯一图片/表情包</strong>
     <p class="annotation-preview">当前前缀：${escapeHtml(pack.host || 'https://gchat.qpic.cn')}</p>
     <p class="annotation-preview">已下载 ${pack.downloadedCount || 0} 个，失败 ${pack.failedCount || 0} 个。</p>
-    <p class="annotation-preview">提示：需要先在 QQ 里自己发一个表情包，提取图链里的 rkey 再批量下载。</p>
+    <p class="annotation-preview">提示：QQ 不会长期保留普通用户图片，默认只尝试下载重复出现至少 2 次的图片/表情包；“最近天数”默认 0，表示不限制。</p>
+    <p class="annotation-preview">提示：需要先在 QQ 里自己发一个表情包/图片，提取图链里的 rkey 再批量下载。</p>
     <p class="annotation-preview">配置文件：${escapeHtml(state.chat.stickerConfigPath || '')}</p>
     <p class="annotation-preview">下载目录：${escapeHtml(state.chat.stickerDir || '')}</p>
   `;
@@ -1362,11 +1393,11 @@ function setStickerDownloadProgress({ visible, current = 0, total = 0, success =
 }
 
 function calculateStickerCandidates() {
-  const minOccurrences = parsePositiveInteger(els.stickerMinOccurrences?.value, 1);
-  const candidates = (stickerPack().items || []).filter((item) => Number(item.occurrences || 0) >= minOccurrences);
+  const { minOccurrences, recentDays } = stickerFilterSettings();
+  const candidates = filterStickerCandidates(stickerPack().items || [], { minOccurrences, recentDays });
   if (!els.stickerCandidateSummary) return candidates;
 
-  els.stickerCandidateSummary.textContent = `当前阈值会处理 ${candidates.length} 个表情包，阈值为至少出现 ${minOccurrences} 次。`;
+  els.stickerCandidateSummary.textContent = `当前会处理 ${candidates.length} 个重复图片/表情包，条件为至少出现 ${minOccurrences} 次，且最近 ${recentDays} 天内出现过。`;
   return candidates;
 }
 
@@ -1946,11 +1977,13 @@ function bindEvents() {
   els.extractStickerRkey.addEventListener('click', fillRkeyFromSampleUrl);
   els.calculateStickerDownloads.addEventListener('click', calculateStickerCandidatesLatest);
   els.saveStickerHost.addEventListener('click', saveStickerHostSetting);
-  els.stickerMinOccurrences.addEventListener('input', () => {
+  const handleStickerFilterInput = () => {
     if (els.stickerCandidateSummary) {
-      els.stickerCandidateSummary.textContent = '阈值已变更，点“计算待下载数量”查看本次会处理多少表情包。';
+      els.stickerCandidateSummary.textContent = '筛选条件已变更，点“计算图片重复数量”查看这次会处理多少图片/表情包。';
     }
-  });
+  };
+  els.stickerMinOccurrences.addEventListener('input', handleStickerFilterInput);
+  els.stickerRecentDays?.addEventListener('input', handleStickerFilterInput);
 
   els.pickFile.addEventListener('click', async () => {
     const result = await fetchJson('/api/select-file', { method: 'POST' });
@@ -1968,10 +2001,10 @@ function bindEvents() {
       return;
     }
 
-    const minOccurrences = parsePositiveInteger(els.stickerMinOccurrences?.value, 1);
+    const { minOccurrences, recentDays } = stickerFilterSettings();
     const candidates = await calculateStickerCandidatesLatest();
     if (!candidates.length) {
-      alert(`当前没有出现至少 ${minOccurrences} 次的表情包。`);
+      alert(`当前没有满足“至少出现 ${minOccurrences} 次，且最近 ${recentDays} 天内出现过”的图片/表情包。`);
       return;
     }
 
@@ -1982,6 +2015,7 @@ function bindEvents() {
     els.downloadStickers.textContent = '下载中...';
     els.saveStickerHost.disabled = true;
     if (els.stickerMinOccurrences) els.stickerMinOccurrences.disabled = true;
+    if (els.stickerRecentDays) els.stickerRecentDays.disabled = true;
     setStickerDownloadProgress({
       visible: true,
       current: 0,
@@ -1989,7 +2023,7 @@ function bindEvents() {
       success: 0,
       failed: 0,
       skipped: 0,
-      text: `准备下载出现至少 ${minOccurrences} 次的表情包`,
+      text: `准备下载至少出现 ${minOccurrences} 次、且最近 ${recentDays} 天出现过的图片/表情包`,
     });
 
     try {
@@ -2049,6 +2083,7 @@ function bindEvents() {
       els.downloadStickers.textContent = originalText;
       els.saveStickerHost.disabled = false;
       if (els.stickerMinOccurrences) els.stickerMinOccurrences.disabled = false;
+      if (els.stickerRecentDays) els.stickerRecentDays.disabled = false;
     }
   });
 
@@ -2738,11 +2773,13 @@ function overrideBindEvents() {
   els.extractStickerRkey.addEventListener('click', fillRkeyFromSampleUrl);
   els.calculateStickerDownloads.addEventListener('click', calculateStickerCandidatesLatest);
   els.saveStickerHost.addEventListener('click', saveStickerHostSetting);
-  els.stickerMinOccurrences.addEventListener('input', () => {
+  const handleStickerFilterInput = () => {
     if (els.stickerCandidateSummary) {
-      els.stickerCandidateSummary.textContent = '阈值已变更，点“计算待下载数量”查看这次会处理多少表情包。';
+      els.stickerCandidateSummary.textContent = '筛选条件已变更，点“计算图片重复数量”查看这次会处理多少图片/表情包。';
     }
-  });
+  };
+  els.stickerMinOccurrences.addEventListener('input', handleStickerFilterInput);
+  els.stickerRecentDays?.addEventListener('input', handleStickerFilterInput);
 
   els.sidebarResizer?.addEventListener('pointerdown', beginSidebarResize);
   window.addEventListener('pointermove', handleSidebarResize);
@@ -2782,10 +2819,10 @@ function overrideBindEvents() {
       return;
     }
 
-    const minOccurrences = parsePositiveInteger(els.stickerMinOccurrences?.value, 1);
+    const { minOccurrences, recentDays } = stickerFilterSettings();
     const candidates = await calculateStickerCandidatesLatest();
     if (!candidates.length) {
-      alert(`当前没有出现至少 ${minOccurrences} 次的表情包。`);
+      alert(`当前没有满足“至少出现 ${minOccurrences} 次，且最近 ${recentDays} 天内出现过”的图片/表情包。`);
       return;
     }
 
@@ -2795,6 +2832,7 @@ function overrideBindEvents() {
     els.downloadStickers.textContent = '下载中...';
     els.saveStickerHost.disabled = true;
     if (els.stickerMinOccurrences) els.stickerMinOccurrences.disabled = true;
+    if (els.stickerRecentDays) els.stickerRecentDays.disabled = true;
     setStickerDownloadProgress({
       visible: true,
       current: 0,
@@ -2802,7 +2840,7 @@ function overrideBindEvents() {
       success: 0,
       failed: 0,
       skipped: 0,
-      text: `准备下载出现至少 ${minOccurrences} 次的表情包`,
+      text: `准备下载至少出现 ${minOccurrences} 次、且最近 ${recentDays} 天出现过的图片/表情包`,
     });
 
     try {
@@ -2861,6 +2899,7 @@ function overrideBindEvents() {
       els.downloadStickers.textContent = originalText;
       els.saveStickerHost.disabled = false;
       if (els.stickerMinOccurrences) els.stickerMinOccurrences.disabled = false;
+      if (els.stickerRecentDays) els.stickerRecentDays.disabled = false;
     }
   });
 
@@ -3096,10 +3135,10 @@ async function calculateStickerCandidatesLatest() {
     renderVirtualWindow(true);
   }
 
-  const minOccurrences = parsePositiveInteger(els.stickerMinOccurrences?.value, 1);
-  const candidates = (stickerPack().items || []).filter((item) => Number(item.occurrences || 0) >= minOccurrences);
+  const { minOccurrences, recentDays } = stickerFilterSettings();
+  const candidates = filterStickerCandidates(stickerPack().items || [], { minOccurrences, recentDays });
   if (els.stickerCandidateSummary) {
-    els.stickerCandidateSummary.textContent = `已重新统计。当前阈值会处理 ${candidates.length} 个表情包，阈值为至少出现 ${minOccurrences} 次。`;
+    els.stickerCandidateSummary.textContent = `已重新统计。当前会处理 ${candidates.length} 个重复图片/表情包，条件为至少出现 ${minOccurrences} 次，且最近 ${recentDays} 天内出现过。`;
   }
   return candidates;
 }
