@@ -717,6 +717,12 @@ textarea {
   color: #934141;
 }
 
+.msg-state-line.pat {
+  margin-bottom: 0;
+  text-align: center;
+  color: #6c6258;
+}
+
 .msg-reply-block,
 .msg-info-block {
   margin-bottom: 10px;

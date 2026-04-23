@@ -460,11 +460,38 @@ function inferSpeakerName(message) {
   return normalizeText(message?.senderName) || normalizeText(message?.rawSenderName) || 'system';
 }
 
+function patMarkerType(message) {
+  if (message?.type !== 'type_1') return '';
+  const text = `${message?.text ?? ''}`.trim();
+  if (text === '[12]') return 'self-to-peer';
+  if (text === '[17]') return 'peer-to-self';
+  return '';
+}
+
+function patMarkerText(message) {
+  const marker = patMarkerType(message);
+  if (!marker || !state.chat) return '';
+  const identity = chatIdentity();
+  if (marker === 'self-to-peer') {
+    return `${identity.self.displayName} 拍了拍 ${identity.peer.displayName}`;
+  }
+  if (marker === 'peer-to-self') {
+    return `${identity.peer.displayName} 拍了拍 ${identity.self.displayName}`;
+  }
+  return '';
+}
+
 function bubbleClassForMessage(message) {
+  if (patMarkerType(message)) {
+    return 'system';
+  }
   if (message?.senderKey === 'self') {
     return 'outgoing';
   }
   if (message?.senderKey === 'peer') {
+    return 'incoming';
+  }
+  if (message?.type === 'type_19' && !message?.system) {
     return 'incoming';
   }
   return 'system';
@@ -608,6 +635,7 @@ function normalizedMessageElements(message) {
 }
 
 function messageTypeLabel(message) {
+  if (message?.type === 'type_19') return '语音/视频通话';
   return normalizeText(message?.typeLabel) || normalizeText(message?.type) || '未知消息';
 }
 
@@ -618,6 +646,7 @@ function stripReplyPrefix(text) {
 function displayTextForMessage(message, elements, stickers, audioFiles) {
   let text = `${message?.text ?? ''}`.trim();
   if (!text) return '';
+  if (patMarkerType(message)) return '';
   if (message?.recalled && /^\[\d+\]$/u.test(text)) return '';
   if (elements.some((element) => element?.type === 'reply')) {
     text = stripReplyPrefix(text);
@@ -634,6 +663,7 @@ function displayTextForMessage(message, elements, stickers, audioFiles) {
 
 function renderMessageBadgesHtml(message) {
   const badges = [];
+  if (patMarkerType(message)) return '';
   if (message?.system) badges.push('<span class="msg-badge system">系统</span>');
   if (message?.recalled) badges.push('<span class="msg-badge recalled">已撤回</span>');
   if (message?.type && message.type !== 'type_1' && !message?.system) {
@@ -739,8 +769,8 @@ function renderStructuredElementsHtml(message, elements) {
       blocks.push(renderInfoBlockHtml('卡片消息', cardTitleFromText(message?.text) || '卡片内容'));
     } else if (message?.type === 'type_11') {
       blocks.push(renderInfoBlockHtml('合并转发', forwardSummaryFromText(message?.text)));
-    } else if (message?.type === 'type_19' && !normalizeText(message?.text)) {
-      blocks.push(renderInfoBlockHtml('类型 19 消息', '导出器未提供可读内容'));
+    } else if (message?.type === 'type_19') {
+      blocks.push(renderInfoBlockHtml('语音/视频通话', normalizeText(message?.text) || '通话记录'));
     }
   }
 
@@ -751,6 +781,7 @@ function renderMessageBodyHtml(message) {
   const stickers = Array.isArray(message?.stickers) ? message.stickers : [];
   const audioFiles = Array.isArray(message?.audioFiles) ? message.audioFiles : [];
   const elements = normalizedMessageElements(message);
+  const patText = patMarkerText(message);
   const visibleText = displayTextForMessage(message, elements, stickers, audioFiles);
   const textHtml = visibleText ? `<div class="msg-content">${nl2br(visibleText)}</div>` : '';
   const badgesHtml = renderMessageBadgesHtml(message);
@@ -760,9 +791,10 @@ function renderMessageBodyHtml(message) {
   const structuredHtml = renderStructuredElementsHtml(message, elements);
   const stickerHtml = renderStickerGalleryHtml(stickers);
   const audioHtml = renderAudioFilesHtml(audioFiles);
+  const patHtml = patText ? `<div class="msg-state-line pat">${escapeHtml(patText)}</div>` : '';
 
-  if (badgesHtml || recalledHtml || replyHtml || textHtml || marketFaceHtml || structuredHtml || stickerHtml || audioHtml) {
-    return `${badgesHtml}${recalledHtml}${replyHtml}${textHtml}${marketFaceHtml}${structuredHtml}${stickerHtml}${audioHtml}`;
+  if (patHtml || badgesHtml || recalledHtml || replyHtml || textHtml || marketFaceHtml || structuredHtml || stickerHtml || audioHtml) {
+    return `${patHtml}${badgesHtml}${recalledHtml}${replyHtml}${textHtml}${marketFaceHtml}${structuredHtml}${stickerHtml}${audioHtml}`;
   }
 
   return `<div class="msg-content">[${escapeHtml(messageTypeLabel(message))}]</div>`;

@@ -450,7 +450,7 @@ function typeLabelForMessage(messageType, isSystem) {
     case 'type_17':
       return '特殊消息';
     case 'type_19':
-      return '类型 19 消息';
+      return '语音/视频通话';
     case 'type_23':
       return '类型 23 消息';
     default:
