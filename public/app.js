@@ -647,6 +647,7 @@ function displayTextForMessage(message, elements, stickers, audioFiles) {
   let text = `${message?.text ?? ''}`.trim();
   if (!text) return '';
   if (patMarkerType(message)) return '';
+  if (message?.type === 'type_19') return '';
   if (message?.recalled && /^\[\d+\]$/u.test(text)) return '';
   if (elements.some((element) => element?.type === 'reply')) {
     text = stripReplyPrefix(text);
@@ -725,6 +726,12 @@ function cardTitleFromText(text) {
   return match?.[1]?.trim() || '';
 }
 
+function renderCallRecordHtml(message) {
+  if (message?.type !== 'type_19') return '';
+  const text = normalizeText(message?.text) || '通话记录';
+  return `<div class="msg-content call-record"><strong>语音/视频通话</strong><br>${nl2br(text)}</div>`;
+}
+
 function renderStructuredElementsHtml(message, elements) {
   const blocks = [];
   for (const element of elements) {
@@ -769,8 +776,6 @@ function renderStructuredElementsHtml(message, elements) {
       blocks.push(renderInfoBlockHtml('卡片消息', cardTitleFromText(message?.text) || '卡片内容'));
     } else if (message?.type === 'type_11') {
       blocks.push(renderInfoBlockHtml('合并转发', forwardSummaryFromText(message?.text)));
-    } else if (message?.type === 'type_19') {
-      blocks.push(renderInfoBlockHtml('语音/视频通话', normalizeText(message?.text) || '通话记录'));
     }
   }
 
@@ -782,6 +787,7 @@ function renderMessageBodyHtml(message) {
   const audioFiles = Array.isArray(message?.audioFiles) ? message.audioFiles : [];
   const elements = normalizedMessageElements(message);
   const patText = patMarkerText(message);
+  const callRecordHtml = renderCallRecordHtml(message);
   const visibleText = displayTextForMessage(message, elements, stickers, audioFiles);
   const textHtml = visibleText ? `<div class="msg-content">${nl2br(visibleText)}</div>` : '';
   const badgesHtml = renderMessageBadgesHtml(message);
@@ -793,8 +799,8 @@ function renderMessageBodyHtml(message) {
   const audioHtml = renderAudioFilesHtml(audioFiles);
   const patHtml = patText ? `<div class="msg-state-line pat">${escapeHtml(patText)}</div>` : '';
 
-  if (patHtml || badgesHtml || recalledHtml || replyHtml || textHtml || marketFaceHtml || structuredHtml || stickerHtml || audioHtml) {
-    return `${patHtml}${badgesHtml}${recalledHtml}${replyHtml}${textHtml}${marketFaceHtml}${structuredHtml}${stickerHtml}${audioHtml}`;
+  if (patHtml || badgesHtml || recalledHtml || replyHtml || callRecordHtml || textHtml || marketFaceHtml || structuredHtml || stickerHtml || audioHtml) {
+    return `${patHtml}${badgesHtml}${recalledHtml}${replyHtml}${callRecordHtml}${textHtml}${marketFaceHtml}${structuredHtml}${stickerHtml}${audioHtml}`;
   }
 
   return `<div class="msg-content">[${escapeHtml(messageTypeLabel(message))}]</div>`;

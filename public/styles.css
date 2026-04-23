@@ -778,16 +778,20 @@ textarea {
 }
 
 .msg-sticker-gallery {
-  display: flex;
-  flex-wrap: wrap;
+  display: inline-grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), max-content));
   gap: 10px;
   margin-top: 10px;
+  width: fit-content;
+  max-width: 100%;
+  justify-items: start;
 }
 
 .msg-sticker-entry {
   display: grid;
   gap: 6px;
   width: min(180px, 100%);
+  justify-items: start;
 }
 
 .msg-sticker-img {
@@ -806,10 +810,12 @@ textarea {
   line-height: 1.45;
   color: var(--muted);
   word-break: break-word;
+  max-width: 180px;
 }
 
 .msg-sticker-text {
-  width: 100%;
+  width: fit-content;
+  max-width: min(180px, 100%);
 }
 
 .msg-sticker-text.failed {
